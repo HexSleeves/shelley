@@ -24,7 +24,7 @@ func NewSubagentRunner(s *Server) *SubagentRunner {
 }
 
 // RunSubagent implements claudetool.SubagentRunner.
-func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt string, wait bool, timeout time.Duration) (string, error) {
+func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt, modelID string, wait bool, timeout time.Duration) (string, error) {
 	s := r.server
 
 	// Notify the UI about the subagent conversation.
@@ -37,9 +37,11 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 		return "", fmt.Errorf("failed to get conversation manager: %w", err)
 	}
 
-	// Get the model ID from the server's default
-	// In predictable-only mode, use "predictable" as the model
-	modelID := s.defaultModel
+	// Use the model inherited from the parent conversation.
+	// Fall back to the server default if not provided.
+	if modelID == "" {
+		modelID = s.defaultModel
+	}
 	if modelID == "" && s.predictableOnly {
 		modelID = "predictable"
 	}

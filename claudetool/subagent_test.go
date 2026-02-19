@@ -34,7 +34,7 @@ type mockSubagentRunner struct {
 	err      error
 }
 
-func (m *mockSubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt string, wait bool, timeout time.Duration) (string, error) {
+func (m *mockSubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt, modelID string, wait bool, timeout time.Duration) (string, error) {
 	if m.err != nil {
 		return "", m.err
 	}

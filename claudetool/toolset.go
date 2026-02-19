@@ -148,6 +148,7 @@ func NewToolSet(ctx context.Context, cfg ToolSetConfig) *ToolSet {
 		subagentTool := &SubagentTool{
 			DB:                   cfg.SubagentDB,
 			ParentConversationID: cfg.ParentConversationID,
+			ModelID:              cfg.ModelID,
 			WorkingDir:           wd,
 			Runner:               cfg.SubagentRunner,
 		}

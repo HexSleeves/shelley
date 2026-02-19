@@ -16,7 +16,8 @@ type SubagentRunner interface {
 	// RunSubagent runs a subagent conversation and returns the last response.
 	// If wait is false, it starts processing in background and returns immediately.
 	// timeout is the maximum time to wait for a response.
-	RunSubagent(ctx context.Context, conversationID, prompt string, wait bool, timeout time.Duration) (string, error)
+	// modelID is the model to use (inherited from the parent conversation).
+	RunSubagent(ctx context.Context, conversationID, prompt, modelID string, wait bool, timeout time.Duration) (string, error)
 }
 
 // SubagentDB is the database interface for subagent operations.
@@ -32,6 +33,7 @@ type SubagentDB interface {
 type SubagentTool struct {
 	DB                   SubagentDB
 	ParentConversationID string
+	ModelID              string
 	WorkingDir           *MutableWorkingDir
 	Runner               SubagentRunner
 }
@@ -134,7 +136,7 @@ func (s *SubagentTool) Run(ctx context.Context, m json.RawMessage) llm.ToolOut {
 	}
 
 	// Use the runner to execute the subagent
-	response, err := s.Runner.RunSubagent(ctx, conversationID, req.Prompt, wait, timeout)
+	response, err := s.Runner.RunSubagent(ctx, conversationID, req.Prompt, s.ModelID, wait, timeout)
 	if err != nil {
 		return llm.ErrorfToolOut("subagent error: %w", err)
 	}
