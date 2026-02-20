@@ -13,13 +13,14 @@ interface ModelsModalProps {
   onModelsChanged?: () => void;
 }
 
-type ProviderType = "anthropic" | "openai" | "openai-responses" | "gemini";
+type ProviderType = "anthropic" | "openai" | "openai-responses" | "gemini" | "codex";
 
 const DEFAULT_ENDPOINTS: Record<ProviderType, string> = {
   anthropic: "https://api.anthropic.com/v1/messages",
   openai: "https://api.openai.com/v1",
   "openai-responses": "https://api.openai.com/v1",
   gemini: "https://generativelanguage.googleapis.com/v1beta",
+  codex: "",
 };
 
 const PROVIDER_LABELS: Record<ProviderType, string> = {
@@ -27,6 +28,7 @@ const PROVIDER_LABELS: Record<ProviderType, string> = {
   openai: "OpenAI (Chat API)",
   "openai-responses": "OpenAI (Responses API)",
   gemini: "Google Gemini",
+  codex: "Codex CLI",
 };
 
 const DEFAULT_MODELS: Record<ProviderType, { name: string; model_name: string }[]> = {
@@ -40,6 +42,10 @@ const DEFAULT_MODELS: Record<ProviderType, { name: string; model_name: string }[
   gemini: [
     { name: "Gemini 3 Pro", model_name: "gemini-3-pro-preview" },
     { name: "Gemini 3 Flash", model_name: "gemini-3-flash-preview" },
+  ],
+  codex: [
+    { name: "GPT-5.2 Codex", model_name: "gpt-5.2-codex" },
+    { name: "GPT-5.3 Codex", model_name: "gpt-5.3-codex" },
   ],
 };
 
@@ -148,7 +154,7 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
       setTestResult({ success: false, message: "Model name is required" });
       return;
     }
-    if (!form.api_key && !editingModelId) {
+    if (!form.api_key && !editingModelId && form.provider_type !== "codex") {
       setTestResult({ success: false, message: "API key is required" });
       return;
     }
@@ -177,8 +183,12 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
   };
 
   const handleSave = async () => {
-    if (!form.display_name || !form.api_key || !form.model_name) {
-      setError("Display name, API key, and model name are required");
+    if (!form.display_name || !form.model_name) {
+      setError("Display name and model name are required");
+      return;
+    }
+    if (!form.api_key && form.provider_type !== "codex") {
+      setError("API key is required");
       return;
     }
 
@@ -301,7 +311,7 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
             <div className="form-group">
               <label>Provider / API Format</label>
               <div className="provider-buttons">
-                {(["anthropic", "openai", "openai-responses", "gemini"] as ProviderType[]).map(
+                {(["anthropic", "openai", "openai-responses", "gemini", "codex"] as ProviderType[]).map(
                   (p) => (
                     <button
                       key={p}
@@ -317,7 +327,7 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
             </div>
 
             {/* Endpoint Selection */}
-            <div className="form-group">
+            {form.provider_type !== "codex" && <div className="form-group">
               <label>Endpoint</label>
               <div className="endpoint-toggle">
                 <button
@@ -346,7 +356,7 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
               ) : (
                 <div className="endpoint-display">{form.endpoint}</div>
               )}
-            </div>
+            </div>}
 
             {/* Model Name with Presets */}
             <div className="form-group">
@@ -385,7 +395,7 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
             </div>
 
             {/* API Key */}
-            <div className="form-group">
+            {form.provider_type !== "codex" && <div className="form-group">
               <label>API Key</label>
               <input
                 type="text"
@@ -395,7 +405,7 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
                 className="form-input"
                 autoComplete="off"
               />
-            </div>
+            </div>}
 
             {/* Max Tokens */}
             <div className="form-group">
@@ -472,11 +482,11 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
                 type="button"
                 className="btn-secondary"
                 onClick={handleTest}
-                disabled={testing || (!form.api_key && !editingModelId) || !form.model_name}
+                disabled={testing || (!form.api_key && !editingModelId && form.provider_type !== "codex") || !form.model_name}
                 title={
                   !form.model_name
                     ? "Enter model name to test"
-                    : !form.api_key && !editingModelId
+                    : !form.api_key && !editingModelId && form.provider_type !== "codex"
                       ? "Enter API key to test"
                       : ""
                 }
@@ -487,7 +497,7 @@ function ModelsModal({ isOpen, onClose, onModelsChanged }: ModelsModalProps) {
                 type="button"
                 className="btn-primary"
                 onClick={handleSave}
-                disabled={!form.display_name || !form.api_key || !form.model_name}
+                disabled={!form.display_name || !form.model_name || (!form.api_key && form.provider_type !== "codex")}
               >
                 {editingModelId ? "Save" : "Add Model"}
               </button>

@@ -771,6 +771,8 @@ func (m *Manager) createServiceFromModel(model *generated.Model) llm.Service {
 			Model:  model.ModelName,
 			HTTPC:  m.httpc,
 		}
+	case "codex":
+		return &codex.Service{Model: model.ModelName}
 	default:
 		if m.logger != nil {
 			m.logger.Error("Unknown provider type for model", "model_id", model.ModelID, "provider_type", model.ProviderType)
