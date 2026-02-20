@@ -2,43 +2,21 @@
 
 ## Bugs (High Priority)
 
-### 1. Slug generation race condition
-The slug generation fires a concurrent `Do()` call on the same `codex.Service`. Both the main turn and the slug generation read from the same `broadcast` channel. The slug call can steal notifications meant for the main turn (and vice versa). This causes:
-- Slug gets "(no response)" because it sees an empty turn
-- Main turn might miss its own `turn/completed` if slug steals it
+### ~~1. Slug generation race condition~~ ✅ FIXED (270beb3)
+Replaced shared broadcast channel with per-thread subscription channels.
+Reader goroutine extracts `threadId` from params and routes to correct subscriber.
 
-**Fix options:**
-- (a) Filter broadcast messages by `threadId` — each `Do()` only processes notifications for its own thread. This is the correct fix. Add `threadID` to the handler closure's filter and re-queue messages for other threads.
-- (b) Use per-thread subscription channels instead of a single broadcast channel. Reader goroutine maintains a `map[threadID]chan`. More complex but cleanest.
-- (c) Skip slug generation entirely for the codex provider (cheapest fix, loses feature).
-
-### 2. Tool call visibility in UI
-Tool calls happen inside `Do()` and are invisible to Shelley's loop/UI. The user only sees the final text response. This is a design tradeoff, not a bug per se, but it degrades the UX.
-
-**Fix options:**
-- Synthesize `llm.Content` blocks for each tool call that happened during the turn. When we get `item/completed` with `type: commandExecution` or `type: fileChange` or dynamic tool calls, build corresponding `ContentTypeToolUse` + `ContentTypeToolResult` content blocks and include them in the response. The loop will see `StopReasonEndTurn` (not `StopReasonToolUse`) so it won't re-execute them, but the UI will display them.
-- This requires careful construction of the content array to match what Shelley's UI expects.
+### ~~2. Tool call visibility in UI~~ ✅ FIXED (270beb3)
+Dynamic tool calls now synthesize `ContentTypeToolUse` + `ContentTypeToolResult` blocks
+in the response. The UI renders them as expandable tool call cards.
 
 ## Improvements (Medium Priority)
 
 ### 3. Thread cleanup
 Codex threads are never cleaned up. The `threads` map grows unboundedly. Add eviction when conversations are deleted/archived, or use an LRU.
 
-### 4. Process restart on crash
-If the `codex app-server` process dies mid-turn, the error propagates correctly, but the thread map becomes stale (thread IDs from the dead process are invalid). On restart, the `threads` map should be cleared so new threads are created.
-
-Currently `ensureProcess` detects a dead process via `p.done` and sets `s.proc = nil`, but doesn't clear `s.threads`. Add:
-```go
-if s.proc != nil {
-    select {
-    case <-s.proc.done:
-        s.proc = nil
-        s.threads = nil // clear stale thread IDs
-    default:
-        return nil
-    }
-}
-```
+### ~~4. Process restart on crash~~ ✅ FIXED (270beb3)
+`ensureProcess` now clears `s.threads` when the subprocess is detected as dead.
 
 ### 5. Codex model selection
 Currently only one `codex-cli` model is registered. Users might want to pick specific Codex models (e.g. `gpt-5.2-codex`, `gpt-5.3-codex`). Options:
@@ -82,7 +60,7 @@ Only basic unit tests exist. Need:
 
 ## Architecture Notes for Future Work
 
-- The `broadcast` channel is a bottleneck — only one goroutine can read each message. For true concurrent multi-conversation support, switch to per-thread channels (see bug #1).
+- ~~The `broadcast` channel is a bottleneck~~ Resolved: now uses per-thread subscription channels.
 - The `codex.Service` holds a mutex but most operations don't need it after process startup. The current locking is minimal (only for process lifecycle and thread map).
 - Codex's app-server protocol is experimental (`[experimental]` in help text). It may change.
 - The protocol schemas are at `/tmp/codex-schema/` (generated via `codex app-server generate-json-schema --out /tmp/codex-schema`). Regenerate if Codex updates.
