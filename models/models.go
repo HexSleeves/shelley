@@ -357,7 +357,7 @@ func All() []Model {
 				if _, err := exec.LookPath("codex"); err != nil {
 					return nil, fmt.Errorf("codex binary not found in PATH")
 				}
-				return &codex.Service{}, nil
+				return &codex.Service{Model: "gpt-5.3-codex"}, nil
 			},
 		},
 		{
