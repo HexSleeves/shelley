@@ -462,6 +462,10 @@ func (s *Service) getOrCreateThread(ctx context.Context, p *process, req *llm.Re
 		s.mu.Unlock()
 		return tid, nil
 	}
+	// Evict all threads if map is too large. Threads are cheap to recreate.
+	if len(s.threads) >= 100 {
+		s.threads = make(map[string]string)
+	}
 	s.mu.Unlock()
 
 	// Build dynamic tools from the request.
