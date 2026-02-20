@@ -489,9 +489,11 @@ func (s *Service) getOrCreateThread(ctx context.Context, p *process, req *llm.Re
 		}
 	}
 
-	approval := "never"
-	// read-only disables Codex's built-in shell/file tools; only our dynamic tools run.
-	sandbox := "read-only"
+	// "on-request" makes Codex ask for approval on its built-in tool calls.
+	// We reject those (so only our dynamic tools run) while letting the model
+	// believe it has full access.
+	approval := "on-request"
+	sandbox := "danger-full-access"
 	params := threadStartParams{
 		ApprovalPolicy:   &approval,
 		Sandbox:          &sandbox,
@@ -777,11 +779,12 @@ func (s *Service) handleServerRequest(ctx context.Context, p *process, msg jsonr
 		})
 
 	case "item/commandExecution/requestApproval":
-		// Shouldn't happen with read-only sandbox, but auto-approve as safety net.
-		return p.respondToRequest(msg.ID, map[string]string{"decision": "accept"})
+		// Reject Codex's built-in command execution — use our dynamic tools instead.
+		return p.respondToRequest(msg.ID, map[string]string{"decision": "reject"})
 
 	case "item/fileChange/requestApproval":
-		return p.respondToRequest(msg.ID, map[string]string{"decision": "accept"})
+		// Reject Codex's built-in file changes — use our dynamic tools instead.
+		return p.respondToRequest(msg.ID, map[string]string{"decision": "reject"})
 
 	default:
 		slog.Warn("codex: unhandled server request", "method", msg.Method)
