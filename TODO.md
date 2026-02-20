@@ -1,66 +1,65 @@
 # TODO: Codex CLI Backend
 
-## Bugs (High Priority)
+## Done ✅
 
-### ~~1. Slug generation race condition~~ ✅ FIXED (270beb3)
-Replaced shared broadcast channel with per-thread subscription channels.
-Reader goroutine extracts `threadId` from params and routes to correct subscriber.
+1. **Slug generation race** — per-thread subscription channels (270beb3)
+2. **Tool call visibility** — synthesize ContentTypeToolUse/Result blocks (270beb3)
+3. **Process restart cleanup** — clear thread map on subprocess death (270beb3)
+4. **Gateway visibility** — GatewayEnabled:true + LookPath check (270beb3)
 
-### ~~2. Tool call visibility in UI~~ ✅ FIXED (270beb3)
-Dynamic tool calls now synthesize `ContentTypeToolUse` + `ContentTypeToolResult` blocks
-in the response. The UI renders them as expandable tool call cards.
+## Next Up (High Priority)
 
-## Improvements (Medium Priority)
+### 5. Disable Codex's built-in tools
+Codex has its own shell/file tools AND we register Shelley's tools as dynamic tools. Both execute simultaneously — Codex runs `ls` via its builtin, AND calls our `bash` tool. This causes duplicate work and confusing output (model's text contains raw command output mixed with the tool result).
 
-### 3. Thread cleanup
-Codex threads are never cleaned up. The `threads` map grows unboundedly. Add eviction when conversations are deleted/archived, or use an LRU.
+**Options:**
+- Set `sandbox: "none"` or `sandbox: "locked-down"` in thread/start to disable Codex's builtins. Then only Shelley's dynamic tools run. Need to test if the protocol supports this.
+- If no protocol support, set `approvalPolicy: "on-failure"` or similar to block builtins.
+- Worst case: accept overlap but filter duplicate content from the response.
 
-### ~~4. Process restart on crash~~ ✅ FIXED (270beb3)
-`ensureProcess` now clears `s.threads` when the subprocess is detected as dead.
+### 6. Thread cleanup / eviction
+The `threads` map grows unboundedly. Add cleanup when conversations are deleted/archived, or cap with an LRU.
 
-### 5. Codex model selection
-Currently only one `codex-cli` model is registered. Users might want to pick specific Codex models (e.g. `gpt-5.2-codex`, `gpt-5.3-codex`). Options:
-- Query available models via `model/list` JSON-RPC call after initialization
-- Register multiple model entries that pass different `Model` values to the `codex.Service`
-- Let users configure the model via the custom models UI
+### 7. Codex model selection
+Only `codex-cli` model registered (uses Codex's default). Users may want to pick specific models. Options:
+- Query `model/list` JSON-RPC after initialization
+- Pass user-selected model to `thread/start`
+- Register multiple model entries or use custom model UI
 
-### 6. Streaming / incremental display
-Codex sends `agentMessage/delta` notifications with incremental text. Currently we ignore these and only use `item/completed`. To show streaming text in the UI, we'd need to:
-- Forward deltas to Shelley's SSE stream somehow
-- This requires changes to the `llm.Service` interface (currently synchronous) or a side-channel
+## Medium Priority
 
-### 7. Approval forwarding to UI
-Currently we auto-approve all command executions and file changes. For safety, these could be forwarded to Shelley's UI for user confirmation. This would require:
-- A new server-side mechanism to pause a turn and ask for user input
-- UI components for approval dialogs
-- This is a bigger architectural change
+### 8. Streaming / incremental display
+No streaming at any layer — not Codex-specific. `llm.Service.Do()` is synchronous. Codex sends `agentMessage/delta` notifications we ignore. Adding streaming requires:
+- New interface (callback/channel for partial results)
+- Loop changes to forward deltas
+- SSE protocol changes (currently streams whole messages, not tokens)
+- UI renderer for incremental text
+This is a cross-cutting concern affecting all backends.
 
-### 8. Context window / token tracking
-`TokenContextWindow()` returns a hardcoded 200k. Should query from Codex's `thread/start` response which includes the model info, or from `model/list`.
+### 9. Context window / token tracking
+`TokenContextWindow()` returns hardcoded 200k. Should query from Codex's `model/list` or thread/start response.
 
-## Nice to Have (Low Priority)
+### 10. Test coverage
+Only basic unit tests. Need:
+- Mock `codex app-server` (small Go program speaking the protocol)
+- Test concurrent `Do()` calls on different threads
+- Test process crash/restart cycle
+- Test dynamic tool call round-trip
 
-### 9. Codex login flow in Shelley UI
-Add a UI button/flow to trigger `codex login` from within Shelley, rather than requiring CLI access. Could use the `v2/LoginAccountParams` JSON-RPC method.
+## Low Priority
 
-### 10. Reasoning display
-Codex sends `reasoning` items with `summary` arrays. These are currently concatenated into a single `ContentTypeThinking` block. Could be displayed more richly.
+### 11. Codex login flow in UI
+UI button to trigger `codex login` via `v2/LoginAccountParams` JSON-RPC.
 
-### 11. Codex's built-in tools alongside Shelley's
-Currently we register only Shelley's tools as dynamic tools and set `sandbox: danger-full-access`. Codex also has its own built-in tools (shell exec, file editing). These coexist but could conflict. Consider:
-- Disabling Codex's built-in tools if possible (no known protocol support for this)
-- Or embracing both and handling the overlap
+### 12. Reasoning display
+Codex `reasoning` items have `summary` arrays. Currently concatenated into one thinking block. Could be richer.
 
-### 12. Test coverage
-Only basic unit tests exist. Need:
-- Integration test with a mock `codex app-server` (a small Go program that speaks the protocol)
-- Test concurrent `Do()` calls
-- Test process crash/restart
-- Test dynamic tool call flow
+### 13. Approval forwarding to UI
+Forward command/file approvals to Shelley's UI for user confirmation. Requires pause-turn mechanism + approval dialog components.
 
-## Architecture Notes for Future Work
+## Architecture Notes
 
-- ~~The `broadcast` channel is a bottleneck~~ Resolved: now uses per-thread subscription channels.
-- The `codex.Service` holds a mutex but most operations don't need it after process startup. The current locking is minimal (only for process lifecycle and thread map).
-- Codex's app-server protocol is experimental (`[experimental]` in help text). It may change.
-- The protocol schemas are at `/tmp/codex-schema/` (generated via `codex app-server generate-json-schema --out /tmp/codex-schema`). Regenerate if Codex updates.
+- Per-thread subscription channels handle concurrent multi-conversation access.
+- Codex's app-server protocol is experimental and may change.
+- Protocol schemas at `/tmp/codex-schema/` (regenerate with `codex app-server generate-json-schema --out`).
+- The `codex.Service` mutex is only for process lifecycle + thread map; turn execution is lock-free.
