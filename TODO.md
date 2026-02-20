@@ -16,11 +16,9 @@ only Shelley's dynamic tools execute. Clean text responses, no duplicate executi
 ### ~~6. Thread cleanup / eviction~~ ✅ FIXED (5168929)
 Thread map capped at 100 entries; cleared entirely when limit is hit.
 
-### 7. Codex model selection
-Only `codex-cli` model registered (uses Codex's default). Users may want to pick specific models. Options:
-- Query `model/list` JSON-RPC after initialization
-- Pass user-selected model to `thread/start`
-- Register multiple model entries or use custom model UI
+### ~~7. Codex model selection~~ ✅ FIXED (8a9b692)
+Added "codex" provider to custom models UI. Users can create models with specific
+Codex model names. Hides endpoint/API key fields (uses `codex login` auth).
 
 ## Medium Priority
 
