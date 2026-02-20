@@ -6,7 +6,7 @@
 2. **Tool call visibility** — synthesize ContentTypeToolUse/Result blocks (270beb3)
 3. **Process restart cleanup** — clear thread map on subprocess death (270beb3)
 4. **Gateway visibility** — GatewayEnabled:true + LookPath check (270beb3)
-5. **Disable Codex builtins** — `sandbox: "read-only"` (627596d)
+5. **Disable Codex builtins** — approval rejection + danger-full-access (4b64d5b)
 6. **Thread cleanup** — evict at 100 entries (5168929)
 7. **Model selection** — "codex" provider in custom models UI (8a9b692)
 

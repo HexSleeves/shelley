@@ -14,7 +14,7 @@ Shelley's tools are registered as Codex "dynamic tools". Codex drives its own to
 - `Do()` always returns `StopReasonEndTurn` (tools already handled)
 - Tool calls visible in UI via synthesized `ContentTypeToolUse` + `ContentTypeToolResult` blocks
 - Codex maintains its own conversation state; `Do()` only sends latest user message text
-- `sandbox: "read-only"` disables Codex's built-in shell/file tools; only Shelley's dynamic tools run
+- `sandbox: "danger-full-access"` + `approvalPolicy: "on-request"` — model believes it has full access, but we reject Codex's built-in command/file approval requests so only our dynamic tools run
 
 ## Files
 
@@ -27,7 +27,7 @@ Shelley's tools are registered as Codex "dynamic tools". Codex drives its own to
 ## Codex App-Server Protocol (JSON-RPC over stdio)
 
 1. `initialize` → response → `initialized` notification
-2. `thread/start` (dynamicTools, approvalPolicy:"never", sandbox:"read-only", model, cwd, baseInstructions) → response with thread ID
+2. `thread/start` (dynamicTools, approvalPolicy:"on-request", sandbox:"danger-full-access", model, cwd, baseInstructions) → response with thread ID
 3. `turn/start` (threadId, input text) → notifications stream:
    - `item/started`, `agentMessage/delta`, `item/completed`, `turn/completed`, `thread/tokenUsage/updated`
    - `item/tool/call` (server request — we execute and respond)
@@ -53,7 +53,8 @@ Shelley's tools are registered as Codex "dynamic tools". Codex drives its own to
 ```
 8a9b692 llm/codex: support custom Codex models with specific model selection
 5168929 llm/codex: evict thread map when it exceeds 100 entries
-627596d llm/codex: use read-only sandbox to disable Codex built-in tools
+4b64d5b llm/codex: use approval rejection instead of read-only sandbox
+627596d llm/codex: use read-only sandbox to disable Codex built-in tools (superseded)
 270beb3 llm/codex: per-thread subscriptions, tool call visibility, process restart cleanup
 bf37fc1 llm/codex: fix subprocess lifecycle and concurrent access
 5da00c4 llm/codex: add Codex CLI app-server backend
