@@ -191,12 +191,20 @@ type agentMessageDeltaNotification struct {
 type process struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
+	stdinMu sync.Mutex // serializes writes to stdin
 	scanner *bufio.Scanner
 
 	nextID atomic.Int64
 
-	// incoming is fed by the reader goroutine.
-	incoming chan jsonrpcMessage
+	// pending tracks in-flight RPC calls. The reader goroutine routes
+	// responses to the correct caller.
+	pendingMu sync.Mutex
+	pending   map[string]chan jsonrpcMessage // id (as string) -> response channel
+
+	// broadcast delivers notifications and server-initiated requests
+	// to all active call() goroutines.
+	broadcast chan jsonrpcMessage
+
 	// done is closed when the reader goroutine exits.
 	done chan struct{}
 }
@@ -221,7 +229,8 @@ func (s *Service) ensureProcess(ctx context.Context) error {
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, s.codexBin(), "app-server")
+	// Use background context so the subprocess outlives any single request.
+	cmd := exec.Command(s.codexBin(), "app-server")
 	cmd.Stderr = os.Stderr // let codex logs flow to shelley's stderr
 
 	stdinPipe, err := cmd.StdinPipe()
@@ -240,15 +249,16 @@ func (s *Service) ensureProcess(ctx context.Context) error {
 	}
 
 	p := &process{
-		cmd:      cmd,
-		stdin:    stdinPipe,
-		scanner:  bufio.NewScanner(stdoutPipe),
-		incoming: make(chan jsonrpcMessage, 64),
-		done:     make(chan struct{}),
+		cmd:       cmd,
+		stdin:     stdinPipe,
+		scanner:   bufio.NewScanner(stdoutPipe),
+		pending:   make(map[string]chan jsonrpcMessage),
+		broadcast: make(chan jsonrpcMessage, 64),
+		done:      make(chan struct{}),
 	}
 	p.scanner.Buffer(make([]byte, 0, 4*1024*1024), 16*1024*1024) // 16 MB max line
 
-	// Reader goroutine.
+	// Reader goroutine: routes responses to pending callers, broadcasts everything else.
 	go func() {
 		defer close(p.done)
 		for p.scanner.Scan() {
@@ -261,7 +271,23 @@ func (s *Service) ensureProcess(ctx context.Context) error {
 				slog.Warn("codex: unparseable line", "line", string(line), "error", err)
 				continue
 			}
-			p.incoming <- msg
+			// If this is a response, route to the pending caller.
+			if msg.isResponse() {
+				key := fmt.Sprint(msg.ID)
+				p.pendingMu.Lock()
+				ch, ok := p.pending[key]
+				p.pendingMu.Unlock()
+				if ok {
+					ch <- msg
+					continue
+				}
+			}
+			// Notification or server request: broadcast.
+			select {
+			case p.broadcast <- msg:
+			default:
+				slog.Warn("codex: broadcast channel full, dropping message", "method", msg.Method)
+			}
 		}
 		if err := p.scanner.Err(); err != nil {
 			slog.Warn("codex: scanner error", "error", err)
@@ -296,15 +322,29 @@ func (p *process) send(v any) error {
 		return err
 	}
 	data = append(data, '\n')
+	p.stdinMu.Lock()
 	_, err = p.stdin.Write(data)
+	p.stdinMu.Unlock()
 	return err
 }
 
 // call sends a request and waits for the response with the matching id.
-// While waiting it dispatches other messages to handler.
-func (s *Service) call(ctx context.Context, method string, params any, handler func(jsonrpcMessage) error) (json.RawMessage, error) {
-	p := s.proc
+// While waiting it dispatches broadcast messages (notifications, server requests) to handler.
+// Safe for concurrent use by multiple goroutines.
+func (s *Service) call(ctx context.Context, p *process, method string, params any, handler func(jsonrpcMessage) error) (json.RawMessage, error) {
 	id := p.nextID.Add(1)
+	idStr := fmt.Sprint(id)
+
+	// Register a channel for our response.
+	respCh := make(chan jsonrpcMessage, 1)
+	p.pendingMu.Lock()
+	p.pending[idStr] = respCh
+	p.pendingMu.Unlock()
+	defer func() {
+		p.pendingMu.Lock()
+		delete(p.pending, idStr)
+		p.pendingMu.Unlock()
+	}()
 
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
@@ -324,18 +364,15 @@ func (s *Service) call(ctx context.Context, method string, params any, handler f
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case msg, ok := <-p.incoming:
+		case msg := <-respCh:
+			if msg.Error != nil {
+				return nil, fmt.Errorf("codex %s error %d: %s", method, msg.Error.Code, msg.Error.Message)
+			}
+			return msg.Result, nil
+		case msg, ok := <-p.broadcast:
 			if !ok {
 				return nil, fmt.Errorf("codex subprocess exited")
 			}
-			// Check if this is the response to our request.
-			if msg.isResponse() && idEquals(msg.ID, id) {
-				if msg.Error != nil {
-					return nil, fmt.Errorf("codex %s error %d: %s", method, msg.Error.Code, msg.Error.Message)
-				}
-				return msg.Result, nil
-			}
-			// Otherwise dispatch.
 			if handler != nil {
 				if err := handler(msg); err != nil {
 					return nil, err
@@ -362,37 +399,42 @@ func (p *process) respondToRequest(id any, result any) error {
 }
 
 func (s *Service) initialize(ctx context.Context) error {
+	p := s.proc
 	params := map[string]any{
 		"clientInfo": map[string]string{
 			"name":    "shelley",
 			"version": "0.1.0",
 		},
 	}
-	_, err := s.call(ctx, "initialize", params, nil)
+	_, err := s.call(ctx, p, "initialize", params, nil)
 	if err != nil {
 		return err
 	}
 	// Send "initialized" notification.
-	return s.proc.sendNotification("initialized")
+	return p.sendNotification("initialized")
 }
 
 // ---------------------------------------------------------------------------
 // Thread management
 // ---------------------------------------------------------------------------
 
-func (s *Service) getOrCreateThread(ctx context.Context, req *llm.Request) (string, error) {
+// getOrCreateThread returns the codex thread ID for the current Shelley conversation.
+// It creates a new thread (with dynamic tools and system instructions) if one doesn't exist.
+func (s *Service) getOrCreateThread(ctx context.Context, p *process, req *llm.Request) (string, error) {
 	convID := llmhttp.ConversationIDFromContext(ctx)
 	if convID == "" {
 		convID = "_default"
 	}
 
+	s.mu.Lock()
 	if s.threads == nil {
 		s.threads = make(map[string]string)
 	}
-
 	if tid, ok := s.threads[convID]; ok {
+		s.mu.Unlock()
 		return tid, nil
 	}
+	s.mu.Unlock()
 
 	// Build dynamic tools from the request.
 	var dynTools []dynamicToolSpec
@@ -434,7 +476,7 @@ func (s *Service) getOrCreateThread(ctx context.Context, req *llm.Request) (stri
 		params.Cwd = &cwd
 	}
 
-	resultJSON, err := s.call(ctx, "thread/start", params, nil)
+	resultJSON, err := s.call(ctx, p, "thread/start", params, nil)
 	if err != nil {
 		return "", fmt.Errorf("thread/start: %w", err)
 	}
@@ -449,7 +491,9 @@ func (s *Service) getOrCreateThread(ctx context.Context, req *llm.Request) (stri
 		return "", fmt.Errorf("thread/start returned empty thread ID")
 	}
 
+	s.mu.Lock()
 	s.threads[convID] = tid
+	s.mu.Unlock()
 	return tid, nil
 }
 
@@ -463,13 +507,13 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 		s.mu.Unlock()
 		return nil, err
 	}
+	p := s.proc
+	s.mu.Unlock()
 
-	threadID, err := s.getOrCreateThread(ctx, req)
+	threadID, err := s.getOrCreateThread(ctx, p, req)
 	if err != nil {
-		s.mu.Unlock()
 		return nil, err
 	}
-	s.mu.Unlock()
 
 	// Extract the latest user message text from the request.
 	userText := extractLatestUserText(req)
@@ -505,7 +549,7 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 	handler := func(msg jsonrpcMessage) error {
 		switch {
 		case msg.isRequest():
-			return s.handleServerRequest(ctx, msg, toolMap)
+			return s.handleServerRequest(ctx, p, msg, toolMap)
 		case msg.Method != "":
 			// Notification.
 			switch msg.Method {
@@ -547,36 +591,26 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 
 	// call sends turn/start and waits for its response; meanwhile handler
 	// processes notifications and server requests until we get our response.
-	s.mu.Lock()
-	_, err = s.call(ctx, "turn/start", turnParams, handler)
-	s.mu.Unlock()
+	_, err = s.call(ctx, p, "turn/start", turnParams, handler)
 	if err != nil {
 		return nil, fmt.Errorf("turn/start: %w", err)
 	}
 
 	// The turn/start response comes back quickly, but the turn may still be
-	// in progress. Keep draining messages until turn/completed.
-	if !turnDone {
-		s.mu.Lock()
-		p := s.proc
-		s.mu.Unlock()
-		if p == nil {
-			return nil, fmt.Errorf("codex process died")
-		}
-		for !turnDone {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case msg, ok := <-p.incoming:
-				if !ok {
-					return nil, fmt.Errorf("codex subprocess exited during turn")
-				}
-				if err := handler(msg); err != nil {
-					return nil, err
-				}
-			case <-p.done:
+	// in progress. Keep draining broadcast messages until turn/completed.
+	for !turnDone {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case msg, ok := <-p.broadcast:
+			if !ok {
 				return nil, fmt.Errorf("codex subprocess exited during turn")
 			}
+			if err := handler(msg); err != nil {
+				return nil, err
+			}
+		case <-p.done:
+			return nil, fmt.Errorf("codex subprocess exited during turn")
 		}
 	}
 
@@ -622,8 +656,7 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 // Handle server-initiated requests (tool calls, approvals)
 // ---------------------------------------------------------------------------
 
-func (s *Service) handleServerRequest(ctx context.Context, msg jsonrpcMessage, tools map[string]*llm.Tool) error {
-	p := s.proc
+func (s *Service) handleServerRequest(ctx context.Context, p *process, msg jsonrpcMessage, tools map[string]*llm.Tool) error {
 	switch msg.Method {
 	case "item/tool/call":
 		var params dynamicToolCallParams
