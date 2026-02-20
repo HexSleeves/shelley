@@ -12,28 +12,19 @@
 
 ## Next Up
 
-### 8. Test coverage
-Only basic unit tests. Need:
-- Mock `codex app-server` (small Go program speaking the protocol)
-- Test concurrent `Do()` calls on different threads
-- Test process crash/restart cycle
-- Test dynamic tool call round-trip
-
-### 9. Context window / token tracking
+### 8. Context window / token tracking
 `TokenContextWindow()` returns hardcoded 200k. Should query from Codex's `model/list` or thread/start response.
 
-## Lower Priority
-
-### 10. Streaming / incremental display
+### 9. Streaming / incremental display
 Cross-cutting concern (not Codex-specific). `llm.Service.Do()` is synchronous. Codex sends `agentMessage/delta` notifications we ignore. Requires changes at every layer.
 
-### 11. Codex login flow in UI
+### 10. Codex login flow in UI
 UI button to trigger `codex login` via `v2/LoginAccountParams` JSON-RPC.
 
-### 12. Reasoning display
+### 11. Reasoning display
 Codex `reasoning` items have `summary` arrays. Currently concatenated into one thinking block.
 
-### 13. Approval forwarding to UI
+### 12. Approval forwarding to UI
 Forward command/file approvals to Shelley's UI for user confirmation.
 
 ## Architecture Notes
