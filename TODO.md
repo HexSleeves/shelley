@@ -9,13 +9,9 @@
 
 ## Next Up (High Priority)
 
-### 5. Disable Codex's built-in tools
-Codex has its own shell/file tools AND we register Shelley's tools as dynamic tools. Both execute simultaneously — Codex runs `ls` via its builtin, AND calls our `bash` tool. This causes duplicate work and confusing output (model's text contains raw command output mixed with the tool result).
-
-**Options:**
-- Set `sandbox: "none"` or `sandbox: "locked-down"` in thread/start to disable Codex's builtins. Then only Shelley's dynamic tools run. Need to test if the protocol supports this.
-- If no protocol support, set `approvalPolicy: "on-failure"` or similar to block builtins.
-- Worst case: accept overlap but filter duplicate content from the response.
+### ~~5. Disable Codex's built-in tools~~ ✅ FIXED (627596d)
+Set `sandbox: "read-only"` in thread/start. Disables Codex's built-in shell/file tools;
+only Shelley's dynamic tools execute. Clean text responses, no duplicate execution.
 
 ### 6. Thread cleanup / eviction
 The `threads` map grows unboundedly. Add cleanup when conversations are deleted/archived, or cap with an LRU.
