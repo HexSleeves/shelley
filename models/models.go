@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os/exec"
 	"time"
 
 	"shelley.exe.dev/db"
@@ -351,8 +352,11 @@ func All() []Model {
 			Provider:        ProviderCodex,
 			Description:     "Codex CLI (uses your ChatGPT/API account)",
 			RequiredEnvVars: []string{},
-			GatewayEnabled:  false,
+			GatewayEnabled:  true, // Codex has its own auth (codex login)
 			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
+				if _, err := exec.LookPath("codex"); err != nil {
+					return nil, fmt.Errorf("codex binary not found in PATH")
+				}
 				return &codex.Service{}, nil
 			},
 		},

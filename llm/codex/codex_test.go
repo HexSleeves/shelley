@@ -45,17 +45,6 @@ func TestExtractLatestUserTextEmpty(t *testing.T) {
 	}
 }
 
-func TestIDEquals(t *testing.T) {
-	if !idEquals(int64(1), float64(1)) {
-		t.Error("int64(1) should equal float64(1)")
-	}
-	if !idEquals("abc", "abc") {
-		t.Error("string ids should match")
-	}
-	if idEquals(int64(1), int64(2)) {
-		t.Error("1 should not equal 2")
-	}
-}
 
 func TestServiceInterface(t *testing.T) {
 	var _ llm.Service = (*Service)(nil)

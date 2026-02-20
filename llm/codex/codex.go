@@ -112,13 +112,6 @@ type turnStartParams struct {
 	Input    []userInput `json:"input"`
 }
 
-type turnStartResponse struct {
-	Turn struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-	} `json:"turn"`
-}
-
 type turnCompletedNotification struct {
 	ThreadID string `json:"threadId"`
 	Turn     struct {
@@ -180,8 +173,16 @@ type tokenBreakdown struct {
 	CachedInputTokens int64 `json:"cachedInputTokens"`
 }
 
-type agentMessageDeltaNotification struct {
-	Delta string `json:"delta"`
+// toolCallRecord captures a dynamic tool call for content synthesis.
+type toolCallRecord struct {
+	ID        string
+	Name      string
+	Input     json.RawMessage
+	Output    string
+	IsError   bool
+	Display   any
+	StartTime time.Time
+	EndTime   time.Time
 }
 
 // ---------------------------------------------------------------------------
@@ -201,12 +202,26 @@ type process struct {
 	pendingMu sync.Mutex
 	pending   map[string]chan jsonrpcMessage // id (as string) -> response channel
 
-	// broadcast delivers notifications and server-initiated requests
-	// to all active call() goroutines.
-	broadcast chan jsonrpcMessage
+	// subs routes notifications and server requests by thread ID.
+	subsMu sync.Mutex
+	subs   map[string]chan jsonrpcMessage // threadID -> subscriber channel
 
 	// done is closed when the reader goroutine exits.
 	done chan struct{}
+}
+
+func (p *process) subscribe(threadID string) chan jsonrpcMessage {
+	ch := make(chan jsonrpcMessage, 64)
+	p.subsMu.Lock()
+	p.subs[threadID] = ch
+	p.subsMu.Unlock()
+	return ch
+}
+
+func (p *process) unsubscribe(threadID string) {
+	p.subsMu.Lock()
+	delete(p.subs, threadID)
+	p.subsMu.Unlock()
 }
 
 func (s *Service) codexBin() string {
@@ -223,7 +238,8 @@ func (s *Service) ensureProcess(ctx context.Context) error {
 		// Check if still alive.
 		select {
 		case <-s.proc.done:
-			s.proc = nil // fell through, restart
+			s.proc = nil
+			s.threads = nil // stale thread IDs from dead process
 		default:
 			return nil
 		}
@@ -249,12 +265,12 @@ func (s *Service) ensureProcess(ctx context.Context) error {
 	}
 
 	p := &process{
-		cmd:       cmd,
-		stdin:     stdinPipe,
-		scanner:   bufio.NewScanner(stdoutPipe),
-		pending:   make(map[string]chan jsonrpcMessage),
-		broadcast: make(chan jsonrpcMessage, 64),
-		done:      make(chan struct{}),
+		cmd:     cmd,
+		stdin:   stdinPipe,
+		scanner: bufio.NewScanner(stdoutPipe),
+		pending: make(map[string]chan jsonrpcMessage),
+		subs:    make(map[string]chan jsonrpcMessage),
+		done:    make(chan struct{}),
 	}
 	p.scanner.Buffer(make([]byte, 0, 4*1024*1024), 16*1024*1024) // 16 MB max line
 
@@ -282,11 +298,24 @@ func (s *Service) ensureProcess(ctx context.Context) error {
 					continue
 				}
 			}
-			// Notification or server request: broadcast.
-			select {
-			case p.broadcast <- msg:
-			default:
-				slog.Warn("codex: broadcast channel full, dropping message", "method", msg.Method)
+			// Route by threadId to the correct subscriber.
+			var threadHint struct {
+				ThreadID string `json:"threadId"`
+			}
+			if msg.Params != nil {
+				_ = json.Unmarshal(msg.Params, &threadHint)
+			}
+			p.subsMu.Lock()
+			ch := p.subs[threadHint.ThreadID] // nil if no subscriber or empty threadID
+			p.subsMu.Unlock()
+			if ch != nil {
+				select {
+				case ch <- msg:
+				default:
+					slog.Warn("codex: thread channel full, dropping", "method", msg.Method, "threadId", threadHint.ThreadID)
+				}
+			} else if threadHint.ThreadID != "" {
+				slog.Warn("codex: no subscriber for thread", "threadId", threadHint.ThreadID, "method", msg.Method)
 			}
 		}
 		if err := p.scanner.Err(); err != nil {
@@ -329,9 +358,8 @@ func (p *process) send(v any) error {
 }
 
 // call sends a request and waits for the response with the matching id.
-// While waiting it dispatches broadcast messages (notifications, server requests) to handler.
-// Safe for concurrent use by multiple goroutines.
-func (s *Service) call(ctx context.Context, p *process, method string, params any, handler func(jsonrpcMessage) error) (json.RawMessage, error) {
+// If sub is non-nil, notifications on that channel are dispatched to handler while waiting.
+func (s *Service) call(ctx context.Context, p *process, method string, params any, sub chan jsonrpcMessage, handler func(jsonrpcMessage) error) (json.RawMessage, error) {
 	id := p.nextID.Add(1)
 	idStr := fmt.Sprint(id)
 
@@ -369,7 +397,7 @@ func (s *Service) call(ctx context.Context, p *process, method string, params an
 				return nil, fmt.Errorf("codex %s error %d: %s", method, msg.Error.Code, msg.Error.Message)
 			}
 			return msg.Result, nil
-		case msg, ok := <-p.broadcast:
+		case msg, ok := <-sub:
 			if !ok {
 				return nil, fmt.Errorf("codex subprocess exited")
 			}
@@ -406,7 +434,7 @@ func (s *Service) initialize(ctx context.Context) error {
 			"version": "0.1.0",
 		},
 	}
-	_, err := s.call(ctx, p, "initialize", params, nil)
+	_, err := s.call(ctx, p, "initialize", params, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -476,7 +504,7 @@ func (s *Service) getOrCreateThread(ctx context.Context, p *process, req *llm.Re
 		params.Cwd = &cwd
 	}
 
-	resultJSON, err := s.call(ctx, p, "thread/start", params, nil)
+	resultJSON, err := s.call(ctx, p, "thread/start", params, nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("thread/start: %w", err)
 	}
@@ -521,6 +549,10 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 		return nil, fmt.Errorf("codex: no user message found in request")
 	}
 
+	// Subscribe to this thread's notifications before starting the turn.
+	sub := p.subscribe(threadID)
+	defer p.unsubscribe(threadID)
+
 	// Build tool lookup.
 	toolMap := make(map[string]*llm.Tool, len(req.Tools))
 	for _, t := range req.Tools {
@@ -544,12 +576,17 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 		usage        llm.Usage
 		turnDone     bool
 		turnErr      error
+		toolCalls    []toolCallRecord
 	)
+
+	recordToolCall := func(tc toolCallRecord) {
+		toolCalls = append(toolCalls, tc)
+	}
 
 	handler := func(msg jsonrpcMessage) error {
 		switch {
 		case msg.isRequest():
-			return s.handleServerRequest(ctx, p, msg, toolMap)
+			return s.handleServerRequest(ctx, p, msg, toolMap, recordToolCall)
 		case msg.Method != "":
 			// Notification.
 			switch msg.Method {
@@ -591,7 +628,7 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 
 	// call sends turn/start and waits for its response; meanwhile handler
 	// processes notifications and server requests until we get our response.
-	_, err = s.call(ctx, p, "turn/start", turnParams, handler)
+	_, err = s.call(ctx, p, "turn/start", turnParams, sub, handler)
 	if err != nil {
 		return nil, fmt.Errorf("turn/start: %w", err)
 	}
@@ -602,7 +639,7 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case msg, ok := <-p.broadcast:
+		case msg, ok := <-sub:
 			if !ok {
 				return nil, fmt.Errorf("codex subprocess exited during turn")
 			}
@@ -629,13 +666,35 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 		})
 	}
 	text := strings.Join(agentTexts, "\n")
-	if text == "" {
+	if text == "" && len(toolCalls) == 0 {
 		text = "(no response)"
 	}
-	content = append(content, llm.Content{
-		Type: llm.ContentTypeText,
-		Text: text,
-	})
+	if text != "" {
+		content = append(content, llm.Content{
+			Type: llm.ContentTypeText,
+			Text: text,
+		})
+	}
+
+	// Synthesize tool use/result content blocks so they appear in the UI.
+	for i := range toolCalls {
+		tc := &toolCalls[i]
+		content = append(content, llm.Content{
+			Type:      llm.ContentTypeToolUse,
+			ID:        tc.ID,
+			ToolName:  tc.Name,
+			ToolInput: tc.Input,
+		})
+		content = append(content, llm.Content{
+			Type:             llm.ContentTypeToolResult,
+			ToolUseID:        tc.ID,
+			ToolError:        tc.IsError,
+			ToolResult:       []llm.Content{{Type: llm.ContentTypeText, Text: tc.Output}},
+			Display:          tc.Display,
+			ToolUseStartTime: &tc.StartTime,
+			ToolUseEndTime:   &tc.EndTime,
+		})
+	}
 
 	usage.Model = s.Model
 	usage.StartTime = &startTime
@@ -656,7 +715,7 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 // Handle server-initiated requests (tool calls, approvals)
 // ---------------------------------------------------------------------------
 
-func (s *Service) handleServerRequest(ctx context.Context, p *process, msg jsonrpcMessage, tools map[string]*llm.Tool) error {
+func (s *Service) handleServerRequest(ctx context.Context, p *process, msg jsonrpcMessage, tools map[string]*llm.Tool, recordToolCall func(toolCallRecord)) error {
 	switch msg.Method {
 	case "item/tool/call":
 		var params dynamicToolCallParams
@@ -675,24 +734,41 @@ func (s *Service) handleServerRequest(ctx context.Context, p *process, msg jsonr
 			})
 		}
 
+		startTime := time.Now()
 		result := tool.Run(ctx, params.Arguments)
+		endTime := time.Now()
+
+		var output string
+		var isError bool
 		if result.Error != nil {
-			return p.respondToRequest(msg.ID, dynamicToolCallResponse{
-				Output:  result.Error.Error(),
-				Success: false,
+			output = result.Error.Error()
+			isError = true
+		} else {
+			var texts []string
+			for _, c := range result.LLMContent {
+				if c.Text != "" {
+					texts = append(texts, c.Text)
+				}
+			}
+			output = strings.Join(texts, "\n")
+		}
+
+		if recordToolCall != nil {
+			recordToolCall(toolCallRecord{
+				ID:        params.CallID,
+				Name:      params.Tool,
+				Input:     params.Arguments,
+				Output:    output,
+				IsError:   isError,
+				Display:   result.Display,
+				StartTime: startTime,
+				EndTime:   endTime,
 			})
 		}
 
-		// Collect text from the LLM content.
-		var texts []string
-		for _, c := range result.LLMContent {
-			if c.Text != "" {
-				texts = append(texts, c.Text)
-			}
-		}
 		return p.respondToRequest(msg.ID, dynamicToolCallResponse{
-			Output:  strings.Join(texts, "\n"),
-			Success: true,
+			Output:  output,
+			Success: !isError,
 		})
 
 	case "item/commandExecution/requestApproval":
@@ -734,8 +810,3 @@ func extractLatestUserText(req *llm.Request) string {
 	return ""
 }
 
-// idEquals compares two JSON-RPC ids which may be string or number.
-func idEquals(a, b any) bool {
-	// Normalize both to float64 (JSON numbers decode as float64).
-	return fmt.Sprint(a) == fmt.Sprint(b)
-}
