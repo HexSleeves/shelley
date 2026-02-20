@@ -11,6 +11,7 @@ import (
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/ant"
+	"shelley.exe.dev/llm/codex"
 	"shelley.exe.dev/llm/gem"
 	"shelley.exe.dev/llm/llmhttp"
 	"shelley.exe.dev/llm/oai"
@@ -25,6 +26,7 @@ const (
 	ProviderAnthropic Provider = "anthropic"
 	ProviderFireworks Provider = "fireworks"
 	ProviderGemini    Provider = "gemini"
+	ProviderCodex     Provider = "codex"
 	ProviderBuiltIn   Provider = "builtin"
 )
 
@@ -93,6 +95,8 @@ func (m Model) Source(cfg *Config) string {
 				return string(SourceGateway)
 			}
 			return "$GEMINI_API_KEY"
+		case ProviderCodex:
+			return "codex login"
 		}
 	}
 
@@ -340,6 +344,16 @@ func All() []Model {
 					svc.URL = url
 				}
 				return svc, nil
+			},
+		},
+		{
+			ID:              "codex-cli",
+			Provider:        ProviderCodex,
+			Description:     "Codex CLI (uses your ChatGPT/API account)",
+			RequiredEnvVars: []string{},
+			GatewayEnabled:  false,
+			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
+				return &codex.Service{}, nil
 			},
 		},
 		{
