@@ -13,8 +13,8 @@
 Set `sandbox: "read-only"` in thread/start. Disables Codex's built-in shell/file tools;
 only Shelley's dynamic tools execute. Clean text responses, no duplicate execution.
 
-### 6. Thread cleanup / eviction
-The `threads` map grows unboundedly. Add cleanup when conversations are deleted/archived, or cap with an LRU.
+### ~~6. Thread cleanup / eviction~~ ✅ FIXED (5168929)
+Thread map capped at 100 entries; cleared entirely when limit is hit.
 
 ### 7. Codex model selection
 Only `codex-cli` model registered (uses Codex's default). Users may want to pick specific models. Options:
