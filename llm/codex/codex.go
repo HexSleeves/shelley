@@ -486,7 +486,8 @@ func (s *Service) getOrCreateThread(ctx context.Context, p *process, req *llm.Re
 	}
 
 	approval := "never"
-	sandbox := "danger-full-access"
+	// read-only disables Codex's built-in shell/file tools; only our dynamic tools run.
+	sandbox := "read-only"
 	params := threadStartParams{
 		ApprovalPolicy:   &approval,
 		Sandbox:          &sandbox,
@@ -772,7 +773,7 @@ func (s *Service) handleServerRequest(ctx context.Context, p *process, msg jsonr
 		})
 
 	case "item/commandExecution/requestApproval":
-		// Auto-approve: Shelley manages its own sandbox.
+		// Shouldn't happen with read-only sandbox, but auto-approve as safety net.
 		return p.respondToRequest(msg.ID, map[string]string{"decision": "accept"})
 
 	case "item/fileChange/requestApproval":
