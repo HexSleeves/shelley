@@ -9,17 +9,15 @@
 5. **Disable Codex builtins** — approval rejection + danger-full-access (4b64d5b)
 6. **Thread cleanup** — evict at 100 entries (5168929)
 7. **Model selection** — "codex" provider in custom models UI (8a9b692)
+8. **Codex login detection** — proactive auth check via `account/get` after initialize; `error` notification + `turn/completed` detect `unauthorized` codexErrorInfo; clear error message tells user to run `codex login`
 
 ## Next Up
 
-### 8. Context window / token tracking
+### 9. Context window / token tracking
 `TokenContextWindow()` returns hardcoded 200k. Should query from Codex's `model/list` or thread/start response.
 
-### 9. Streaming / incremental display
+### 10. Streaming / incremental display
 Cross-cutting concern (not Codex-specific). `llm.Service.Do()` is synchronous. Codex sends `agentMessage/delta` notifications we ignore. Requires changes at every layer.
-
-### 10. Codex login flow in UI
-UI button to trigger `codex login` via `v2/LoginAccountParams` JSON-RPC.
 
 ### 11. Reasoning display
 Codex `reasoning` items have `summary` arrays. Currently concatenated into one thinking block.

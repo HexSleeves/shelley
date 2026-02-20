@@ -54,3 +54,24 @@ func TestServiceInterface(t *testing.T) {
 		t.Error("TokenContextWindow should be nonzero")
 	}
 }
+
+func TestTurnErrorIsUnauthorized(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *turnError
+		want bool
+	}{
+		{"nil", nil, false},
+		{"string unauthorized", &turnError{Message: "auth failed", CodexErrorInfo: "unauthorized"}, true},
+		{"message contains unauthorized", &turnError{Message: "Unauthorized request"}, true},
+		{"other error", &turnError{Message: "rate limit exceeded", CodexErrorInfo: "usageLimitExceeded"}, false},
+		{"empty", &turnError{Message: "something broke"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.isUnauthorized(); got != tt.want {
+				t.Errorf("isUnauthorized() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -40,6 +40,10 @@ type Service struct {
 
 var _ llm.Service = (*Service)(nil)
 
+// ErrUnauthorized is returned when Codex reports an auth failure.
+// The user needs to run "codex login" to authenticate.
+var ErrUnauthorized = fmt.Errorf("codex: not authenticated — run 'codex login' in a terminal to sign in")
+
 func (s *Service) TokenContextWindow() int { return 200_000 }
 func (s *Service) MaxImageDimension() int   { return 0 }
 
@@ -122,7 +126,27 @@ type turnCompletedNotification struct {
 }
 
 type turnError struct {
-	Message string `json:"message"`
+	Message        string      `json:"message"`
+	CodexErrorInfo any         `json:"codexErrorInfo,omitempty"`
+}
+
+// isUnauthorized returns true if the error indicates an auth failure.
+func (e *turnError) isUnauthorized() bool {
+	if e == nil {
+		return false
+	}
+	// codexErrorInfo can be the string "unauthorized" or an object.
+	if s, ok := e.CodexErrorInfo.(string); ok && s == "unauthorized" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(e.Message), "unauthorized")
+}
+
+type errorNotification struct {
+	ThreadID  string    `json:"threadId"`
+	TurnID    string    `json:"turnId"`
+	Error     turnError `json:"error"`
+	WillRetry bool      `json:"willRetry"`
 }
 
 type itemCompletedNotification struct {
@@ -439,7 +463,30 @@ func (s *Service) initialize(ctx context.Context) error {
 		return err
 	}
 	// Send "initialized" notification.
-	return p.sendNotification("initialized")
+	if err := p.sendNotification("initialized"); err != nil {
+		return err
+	}
+
+	// Check auth status early so we can fail fast with a clear message.
+	return s.checkAuth(ctx, p)
+}
+
+func (s *Service) checkAuth(ctx context.Context, p *process) error {
+	resultJSON, err := s.call(ctx, p, "account/get", map[string]any{}, nil, nil)
+	if err != nil {
+		slog.Warn("codex: account/get failed", "error", err)
+		return nil // non-fatal; auth errors will surface during turn/start
+	}
+	var resp struct {
+		RequiresOpenaiAuth bool `json:"requiresOpenaiAuth"`
+	}
+	if err := json.Unmarshal(resultJSON, &resp); err != nil {
+		return nil
+	}
+	if resp.RequiresOpenaiAuth {
+		return ErrUnauthorized
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -614,10 +661,23 @@ func (s *Service) Do(ctx context.Context, req *llm.Request) (*llm.Response, erro
 			case "turn/completed":
 				var n turnCompletedNotification
 				if err := json.Unmarshal(msg.Params, &n); err == nil {
-					if n.Turn.Status == "failed" && n.Turn.Error != nil {
-						turnErr = fmt.Errorf("codex turn failed: %s", n.Turn.Error.Message)
+		if n.Turn.Status == "failed" && n.Turn.Error != nil {
+						if n.Turn.Error.isUnauthorized() {
+							turnErr = ErrUnauthorized
+						} else {
+							turnErr = fmt.Errorf("codex turn failed: %s", n.Turn.Error.Message)
+						}
 					}
 					turnDone = true
+				}
+			case "error":
+				var n errorNotification
+				if err := json.Unmarshal(msg.Params, &n); err == nil {
+					if n.Error.isUnauthorized() {
+						turnErr = ErrUnauthorized
+					} else if !n.WillRetry {
+						turnErr = fmt.Errorf("codex error: %s", n.Error.Message)
+					}
 				}
 			case "thread/tokenUsage/updated":
 				var n tokenUsageNotification

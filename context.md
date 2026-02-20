@@ -51,6 +51,7 @@ Shelley's tools are registered as Codex "dynamic tools". Codex drives its own to
 ## Key Commits
 
 ```
+PENDING  llm/codex: detect auth failure and report clear error to user
 8a9b692 llm/codex: support custom Codex models with specific model selection
 5168929 llm/codex: evict thread map when it exceeds 100 entries
 4b64d5b llm/codex: use approval rejection instead of read-only sandbox
