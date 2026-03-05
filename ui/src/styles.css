@@ -5685,6 +5685,8 @@ kbd {
   100% {
     transform: translateX(300%);
   }
+}
+
 /* Codex Auth Section */
 .codex-section {
   padding: 16px;
