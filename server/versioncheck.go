@@ -32,6 +32,7 @@ type VersionChecker struct {
 	skipCheck   bool
 	githubOwner string
 	githubRepo  string
+	branch      string
 }
 
 // VersionInfo contains version check results.
@@ -81,19 +82,46 @@ type StaticCommitInfo struct {
 }
 
 const (
-	// staticMetadataURL is the base URL for version metadata on GitHub Pages.
-	// This avoids GitHub API rate limits.
-	staticMetadataURL = "https://boldsoftware.github.io/shelley"
+	defaultGitHubOwner = "boldsoftware"
+	defaultGitHubRepo  = "shelley"
+	defaultBranch      = "main"
 )
 
 // NewVersionChecker creates a new version checker.
-func NewVersionChecker() *VersionChecker {
+func NewVersionChecker(cfg *UpdateSourceConfig) *VersionChecker {
 	skipCheck := os.Getenv("SHELLEY_SKIP_VERSION_CHECK") == "true"
+
+	owner := defaultGitHubOwner
+	repo := defaultGitHubRepo
+	branch := defaultBranch
+
+	if cfg != nil {
+		if cfg.Owner != "" {
+			owner = cfg.Owner
+		}
+		if cfg.Repo != "" {
+			repo = cfg.Repo
+		}
+		if cfg.Branch != "" {
+			branch = cfg.Branch
+		}
+	}
+
 	return &VersionChecker{
 		skipCheck:   skipCheck,
-		githubOwner: "boldsoftware",
-		githubRepo:  "shelley",
+		githubOwner: owner,
+		githubRepo:  repo,
+		branch:      branch,
 	}
+}
+
+// staticMetadataURL returns the base URL for version metadata on GitHub Pages.
+func (vc *VersionChecker) staticMetadataURL() string {
+	base := fmt.Sprintf("https://%s.github.io/%s", vc.githubOwner, vc.githubRepo)
+	if vc.branch != "" && vc.branch != defaultBranch {
+		return base + "/" + vc.branch
+	}
+	return base
 }
 
 // Check checks for a new version, using the cache if still valid.
@@ -199,7 +227,7 @@ func (vc *VersionChecker) FetchChangelog(ctx context.Context, currentTag, latest
 		return nil, nil
 	}
 
-	url := staticMetadataURL + "/commits.json"
+	url := vc.staticMetadataURL() + "/commits.json"
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -310,7 +338,7 @@ func extractSHAFromTag(tag string) string {
 
 // fetchLatestRelease fetches the latest release info from GitHub Pages.
 func (vc *VersionChecker) fetchLatestRelease(ctx context.Context) (*ReleaseInfo, error) {
-	url := staticMetadataURL + "/release.json"
+	url := vc.staticMetadataURL() + "/release.json"
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

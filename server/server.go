@@ -240,7 +240,7 @@ type Server struct {
 }
 
 // NewServer creates a new server instance
-func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool.ToolSetConfig, logger *slog.Logger, predictableOnly bool, terminalURL, defaultModel, requireHeader string, links []Link) *Server {
+func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool.ToolSetConfig, logger *slog.Logger, predictableOnly bool, terminalURL, defaultModel, requireHeader string, links []Link, updateSource *UpdateSourceConfig) *Server {
 	s := &Server{
 		db:                  database,
 		llmManager:          llmManager,
@@ -252,7 +252,7 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 		defaultModel:        defaultModel,
 		requireHeader:       requireHeader,
 		links:               links,
-		versionChecker:      NewVersionChecker(),
+		versionChecker:      NewVersionChecker(updateSource),
 		notifDispatcher:     notifications.NewDispatcher(logger),
 		shutdownCh:          make(chan struct{}),
 	}

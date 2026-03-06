@@ -111,7 +111,7 @@ func runServe(global GlobalConfig, args []string) {
 	toolSetConfig := setupToolSetConfig(llmManager, llmManager)
 
 	// Create server
-	svr := server.NewServer(database, llmManager, toolSetConfig, logger, global.PredictableOnly, llmConfig.TerminalURL, llmConfig.DefaultModel, *requireHeader, llmConfig.Links)
+	svr := server.NewServer(database, llmManager, toolSetConfig, logger, global.PredictableOnly, llmConfig.TerminalURL, llmConfig.DefaultModel, *requireHeader, llmConfig.Links, llmConfig.UpdateSource)
 
 	// Seed notification channels from config file if DB is empty (one-time migration)
 	svr.SeedNotificationChannelsFromConfig(llmConfig.NotificationChannels)
@@ -305,11 +305,12 @@ func buildLLMConfig(logger *slog.Logger, configPath, terminalURL, defaultModel s
 		}
 
 		var cfg struct {
-			LLMGateway           string           `json:"llm_gateway"`
-			TerminalURL          string           `json:"terminal_url"`
-			DefaultModel         string           `json:"default_model"`
-			Links                []server.Link    `json:"links"`
-			NotificationChannels []map[string]any `json:"notification_channels"`
+			LLMGateway           string                     `json:"llm_gateway"`
+			TerminalURL          string                     `json:"terminal_url"`
+			DefaultModel         string                     `json:"default_model"`
+			Links                []server.Link              `json:"links"`
+			NotificationChannels []map[string]any           `json:"notification_channels"`
+			UpdateSource         *server.UpdateSourceConfig `json:"update_source"`
 		}
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			logger.Warn("Failed to parse config file", "path", configPath, "error", err)
@@ -357,6 +358,11 @@ func buildLLMConfig(logger *slog.Logger, configPath, terminalURL, defaultModel s
 		if len(cfg.NotificationChannels) > 0 {
 			llmCfg.NotificationChannels = cfg.NotificationChannels
 			logger.Info("Notification channels configured", "count", len(cfg.NotificationChannels))
+		}
+
+		if cfg.UpdateSource != nil {
+			llmCfg.UpdateSource = cfg.UpdateSource
+			logger.Info("Update source configured", "owner", cfg.UpdateSource.Owner, "repo", cfg.UpdateSource.Repo, "branch", cfg.UpdateSource.Branch)
 		}
 	}
 
