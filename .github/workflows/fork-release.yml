@@ -39,6 +39,13 @@ jobs:
       - name: Build UI
         run: cd ui && pnpm install --frozen-lockfile && pnpm run build
 
+      - name: Build templates
+        run: |
+          for dir in templates/*/; do
+            name=$(basename "$dir")
+            tar -czf "templates/$name.tar.gz" -C "templates/$name" --exclude='.DS_Store' .
+          done
+
       - name: Build Linux binary
         run: |
           VERSION="dev-$(git rev-list --count HEAD)-$(git rev-parse --short=6 HEAD)"
