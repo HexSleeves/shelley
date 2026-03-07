@@ -1,0 +1,60 @@
+name: Fork Release
+
+on:
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Skip on upstream repo
+    if: github.repository != 'boldsoftware/shelley'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Build UI
+        run: cd ui && pnpm install --frozen-lockfile && pnpm run build
+
+      - name: Build Linux binary
+        run: |
+          VERSION="dev-$(git rev-list --count HEAD)-$(git rev-parse --short=6 HEAD)"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags "-s -w -X shelley.exe.dev/version.Version=${VERSION}" \
+            -o shelley_linux_amd64 \
+            ./cmd/shelley
+
+      - name: Create/update dev release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev-latest
+          name: Dev Build (latest)
+          prerelease: true
+          files: shelley_linux_amd64
+          body: |
+            Latest dev build from commit ${{ github.sha }}
+            
+            Download: `shelley_linux_amd64`
