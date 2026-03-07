@@ -736,6 +736,16 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	llmService, err := s.llmManager.GetService(modelID)
+	if err != nil && modelID == s.defaultModel {
+		// Default model unavailable, try first available non-predictable
+		for _, m := range s.llmManager.GetAvailableModels() {
+			if m != "predictable" {
+				modelID = m
+				llmService, err = s.llmManager.GetService(modelID)
+				break
+			}
+		}
+	}
 	if err != nil {
 		s.logger.Error("Unsupported model requested", "model", modelID, "error", err)
 		http.Error(w, fmt.Sprintf("Unsupported model: %s", modelID), http.StatusBadRequest)
