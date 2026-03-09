@@ -552,7 +552,7 @@ func (m *claudeLLMManager) GetModelInfo(modelID string) *models.ModelInfo {
 	return nil
 }
 
-func (m *claudeLLMManager) RefreshCustomModels() error {
+func (m *claudeLLMManager) ReloadModels() error {
 	return nil
 }
 

@@ -86,7 +86,7 @@ func TestRegistryContextWindowsFlowIntoServices(t *testing.T) {
 	}
 }
 
-func TestRefreshCustomModelsReloadsOAuthFallbacks(t *testing.T) {
+func TestReloadModelsRefreshesOAuthFallbacks(t *testing.T) {
 	tempDB := t.TempDir() + "/models.db"
 	database, err := db.New(db.Config{DSN: tempDB})
 	if err != nil {
@@ -122,8 +122,8 @@ func TestRefreshCustomModelsReloadsOAuthFallbacks(t *testing.T) {
 		t.Fatalf("UpsertOAuthCredentials failed: %v", err)
 	}
 
-	if err := manager.RefreshCustomModels(); err != nil {
-		t.Fatalf("RefreshCustomModels after auth failed: %v", err)
+	if err := manager.ReloadModels(); err != nil {
+		t.Fatalf("ReloadModels after auth failed: %v", err)
 	}
 
 	for _, modelID := range []string{"gpt-5.4-oauth", "gpt-5.3-codex-oauth", "gpt-5.2-codex-oauth"} {
@@ -143,8 +143,8 @@ func TestRefreshCustomModelsReloadsOAuthFallbacks(t *testing.T) {
 	if err := database.DeleteOAuthCredentials(context.Background(), "codex"); err != nil {
 		t.Fatalf("DeleteOAuthCredentials failed: %v", err)
 	}
-	if err := manager.RefreshCustomModels(); err != nil {
-		t.Fatalf("RefreshCustomModels after logout failed: %v", err)
+	if err := manager.ReloadModels(); err != nil {
+		t.Fatalf("ReloadModels after logout failed: %v", err)
 	}
 
 	for _, modelID := range []string{"gpt-5.4-oauth", "gpt-5.3-codex-oauth", "gpt-5.2-codex-oauth"} {

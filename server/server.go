@@ -87,7 +87,7 @@ type LLMProvider interface {
 	GetAvailableModels() []string
 	HasModel(modelID string) bool
 	GetModelInfo(modelID string) *models.ModelInfo
-	RefreshCustomModels() error
+	ReloadModels() error
 }
 
 // NewLLMServiceManager creates a new LLM service manager from config

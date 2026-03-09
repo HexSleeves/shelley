@@ -803,7 +803,7 @@ func (m *inspectableLLMManager) GetModelInfo(modelID string) *models.ModelInfo {
 	return nil
 }
 
-func (m *inspectableLLMManager) RefreshCustomModels() error {
+func (m *inspectableLLMManager) ReloadModels() error {
 	return nil
 }
 

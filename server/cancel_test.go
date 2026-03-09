@@ -401,6 +401,6 @@ func (m *testLLMManager) GetModelInfo(modelID string) *models.ModelInfo {
 	return nil
 }
 
-func (m *testLLMManager) RefreshCustomModels() error {
+func (m *testLLMManager) ReloadModels() error {
 	return nil
 }

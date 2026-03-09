@@ -175,8 +175,8 @@ func (s *Server) handleCodexPkceComplete(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Refresh models to pick up codex models
-	if err := s.llmManager.RefreshCustomModels(); err != nil {
-		s.logger.Warn("Failed to refresh custom models after codex auth", "error", err)
+	if err := s.llmManager.ReloadModels(); err != nil {
+		s.logger.Warn("Failed to reload models after codex auth", "error", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -203,8 +203,8 @@ func (s *Server) handleCodexLogout(w http.ResponseWriter, r *http.Request) {
 	s.clearPendingCodexAuth()
 
 	// Refresh models
-	if err := s.llmManager.RefreshCustomModels(); err != nil {
-		s.logger.Warn("Failed to refresh custom models after codex logout", "error", err)
+	if err := s.llmManager.ReloadModels(); err != nil {
+		s.logger.Warn("Failed to reload models after codex logout", "error", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -521,9 +521,8 @@ func (m *Manager) loadCustomModels() error {
 	return nil
 }
 
-// RefreshCustomModels reloads custom models from the database.
-// Call this after adding or removing custom models via the UI.
-func (m *Manager) RefreshCustomModels() error {
+// ReloadModels rebuilds the manager's model list from built-in and database state.
+func (m *Manager) ReloadModels() error {
 	return m.reloadModels()
 }
 

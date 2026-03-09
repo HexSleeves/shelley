@@ -64,7 +64,7 @@ func (m *fakeLLMManager) GetModelInfo(modelID string) *models.ModelInfo {
 	return nil
 }
 
-func (m *fakeLLMManager) RefreshCustomModels() error {
+func (m *fakeLLMManager) ReloadModels() error {
 	return nil
 }
 
