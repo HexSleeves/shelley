@@ -39,6 +39,7 @@ type ModelSpec struct {
 	Tags                string
 	RequiredEnvVars     []string
 	GatewayEnabled      bool
+	OAuthFallback       string
 	ContextWindowTokens int
 	MaxOutputTokens     int
 	SupportsReasoning   bool
@@ -65,6 +66,7 @@ func builtInModels() []Model {
 			Tags:            spec.Tags,
 			RequiredEnvVars: append([]string(nil), spec.RequiredEnvVars...),
 			GatewayEnabled:  spec.GatewayEnabled,
+			OAuthFallback:   spec.OAuthFallback,
 			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
 				return newBuiltInService(spec, config, httpc)
 			},
@@ -377,9 +379,9 @@ var builtInModelSpecs = []ModelSpec{
 	anthropicSpec("claude-sonnet-4.5", "Claude Sonnet 4.5", ant.Claude45Sonnet, "", 64000),
 	anthropicSpec("claude-haiku-4.5", "Claude Haiku 4.5", ant.Claude45Haiku, "slug-backup", 64000),
 	openAICompatSpec("glm-4.7-fireworks", "GLM-4.7 on Fireworks", ProviderFireworks, oai.GLM47Fireworks, "", true),
-	openAIResponseSpec("gpt-5.4", "GPT-5.4", oai.GPT54, ""),
-	openAIResponseSpec("gpt-5.3-codex", "GPT-5.3 Codex", oai.GPT53Codex, ""),
-	openAIResponseSpec("gpt-5.2-codex", "GPT-5.2 Codex", oai.GPT52Codex, ""),
+	withOAuthFallback(openAIResponseSpec("gpt-5.4", "GPT-5.4", oai.GPT54, ""), "codex"),
+	withOAuthFallback(openAIResponseSpec("gpt-5.3-codex", "GPT-5.3 Codex", oai.GPT53Codex, ""), "codex"),
+	withOAuthFallback(openAIResponseSpec("gpt-5.2-codex", "GPT-5.2 Codex", oai.GPT52Codex, ""), "codex"),
 	openAICompatSpec("gpt-oss-20b-fireworks", "GPT-OSS 20B on Fireworks", ProviderFireworks, oai.GPTOSS20B, "slug", true),
 	openAICompatSpec("glm-4p6-fireworks", "GLM-4P6 on Fireworks", ProviderFireworks, oai.GLM4P6Fireworks, "", false),
 	geminiSpec("gemini-3-pro", "Gemini 3 Pro", "gemini-3-pro-preview", "", 1000000),
@@ -395,4 +397,9 @@ var builtInModelSpecs = []ModelSpec{
 		PatchBehavior:   PatchBehaviorDefault,
 		RequiredEnvVars: []string{},
 	},
+}
+
+func withOAuthFallback(spec ModelSpec, provider string) ModelSpec {
+	spec.OAuthFallback = provider
+	return spec
 }

@@ -5,8 +5,11 @@ import (
 	"log/slog"
 	"net/http"
 	"testing"
+	"time"
 
 	"shelley.exe.dev/claudetool"
+	"shelley.exe.dev/db"
+	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 )
 
@@ -80,6 +83,74 @@ func TestRegistryContextWindowsFlowIntoServices(t *testing.T) {
 				t.Fatalf("TokenContextWindow() = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRefreshCustomModelsReloadsOAuthFallbacks(t *testing.T) {
+	tempDB := t.TempDir() + "/models.db"
+	database, err := db.New(db.Config{DSN: tempDB})
+	if err != nil {
+		t.Fatalf("db.New failed: %v", err)
+	}
+	defer database.Close()
+
+	if err := database.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	manager, err := NewManager(&Config{
+		DB:     database,
+		Logger: slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+
+	for _, modelID := range []string{"gpt-5.4-oauth", "gpt-5.3-codex-oauth", "gpt-5.2-codex-oauth"} {
+		if manager.HasModel(modelID) {
+			t.Fatalf("unexpected OAuth model before auth: %s", modelID)
+		}
+	}
+
+	_, err = database.UpsertOAuthCredentials(context.Background(), generated.UpsertOAuthCredentialsParams{
+		Provider:     "codex",
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("UpsertOAuthCredentials failed: %v", err)
+	}
+
+	if err := manager.RefreshCustomModels(); err != nil {
+		t.Fatalf("RefreshCustomModels after auth failed: %v", err)
+	}
+
+	for _, modelID := range []string{"gpt-5.4-oauth", "gpt-5.3-codex-oauth", "gpt-5.2-codex-oauth"} {
+		if !manager.HasModel(modelID) {
+			t.Fatalf("expected OAuth model after auth: %s", modelID)
+		}
+	}
+
+	svc, err := manager.GetService("gpt-5.4-oauth")
+	if err != nil {
+		t.Fatalf("GetService(gpt-5.4-oauth) failed: %v", err)
+	}
+	if got := svc.TokenContextWindow(); got != 1000000 {
+		t.Fatalf("gpt-5.4-oauth TokenContextWindow() = %d, want %d", got, 1000000)
+	}
+
+	if err := database.DeleteOAuthCredentials(context.Background(), "codex"); err != nil {
+		t.Fatalf("DeleteOAuthCredentials failed: %v", err)
+	}
+	if err := manager.RefreshCustomModels(); err != nil {
+		t.Fatalf("RefreshCustomModels after logout failed: %v", err)
+	}
+
+	for _, modelID := range []string{"gpt-5.4-oauth", "gpt-5.3-codex-oauth", "gpt-5.2-codex-oauth"} {
+		if manager.HasModel(modelID) {
+			t.Fatalf("unexpected OAuth model after logout: %s", modelID)
+		}
 	}
 }
 

@@ -18,7 +18,28 @@ type codexAuthState struct {
 	ExpiresAt    time.Time
 }
 
-var pendingCodexAuth *codexAuthState
+func (s *Server) storePendingCodexAuth(state codexAuthState) {
+	s.codexAuthMu.Lock()
+	s.pendingCodexAuth[state.State] = state
+	s.codexAuthMu.Unlock()
+}
+
+func (s *Server) consumePendingCodexAuth(state string) (codexAuthState, bool) {
+	s.codexAuthMu.Lock()
+	defer s.codexAuthMu.Unlock()
+
+	pendingAuth, ok := s.pendingCodexAuth[state]
+	if ok {
+		delete(s.pendingCodexAuth, state)
+	}
+	return pendingAuth, ok
+}
+
+func (s *Server) clearPendingCodexAuth() {
+	s.codexAuthMu.Lock()
+	s.pendingCodexAuth = make(map[string]codexAuthState)
+	s.codexAuthMu.Unlock()
+}
 
 // CodexAuthStatusResponse is the response for GET /api/codex-auth/status
 type CodexAuthStatusResponse struct {
@@ -77,12 +98,11 @@ func (s *Server) handleCodexPkceStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store the pending auth state
-	pendingCodexAuth = &codexAuthState{
+	s.storePendingCodexAuth(codexAuthState{
 		CodeVerifier: challenge.CodeVerifier,
 		State:        challenge.State,
 		ExpiresAt:    time.Now().Add(10 * time.Minute),
-	}
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(CodexPkceStartResponse{
@@ -104,17 +124,6 @@ func (s *Server) handleCodexPkceComplete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if pendingCodexAuth == nil {
-		http.Error(w, "No pending auth flow - please start again", http.StatusBadRequest)
-		return
-	}
-
-	if time.Now().After(pendingCodexAuth.ExpiresAt) {
-		pendingCodexAuth = nil
-		http.Error(w, "Auth flow expired - please start again", http.StatusBadRequest)
-		return
-	}
-
 	// Parse the callback URL to extract the code
 	code, state, err := codex.ParseCallbackURL(req.CallbackURL)
 	if err != nil {
@@ -122,14 +131,20 @@ func (s *Server) handleCodexPkceComplete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Verify state matches
-	if state != pendingCodexAuth.State {
-		http.Error(w, "State mismatch - possible CSRF attack", http.StatusBadRequest)
+	pendingAuth, ok := s.consumePendingCodexAuth(state)
+
+	if !ok {
+		http.Error(w, "No pending auth flow - please start again", http.StatusBadRequest)
+		return
+	}
+
+	if time.Now().After(pendingAuth.ExpiresAt) {
+		http.Error(w, "Auth flow expired - please start again", http.StatusBadRequest)
 		return
 	}
 
 	// Exchange code for tokens
-	tokens, err := codex.ExchangeCode(code, pendingCodexAuth.CodeVerifier, nil)
+	tokens, err := codex.ExchangeCode(code, pendingAuth.CodeVerifier, nil)
 	if err != nil {
 		http.Error(w, "Failed to exchange code: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -159,9 +174,6 @@ func (s *Server) handleCodexPkceComplete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Clear pending auth
-	pendingCodexAuth = nil
-
 	// Refresh models to pick up codex models
 	if err := s.llmManager.RefreshCustomModels(); err != nil {
 		s.logger.Warn("Failed to refresh custom models after codex auth", "error", err)
@@ -188,8 +200,7 @@ func (s *Server) handleCodexLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Clear any pending auth
-	pendingCodexAuth = nil
+	s.clearPendingCodexAuth()
 
 	// Refresh models
 	if err := s.llmManager.RefreshCustomModels(); err != nil {

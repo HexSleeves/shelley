@@ -124,7 +124,7 @@ func TestIsNewerMinor(t *testing.T) {
 func TestVersionCheckerSkipCheck(t *testing.T) {
 	t.Setenv("SHELLEY_SKIP_VERSION_CHECK", "true")
 
-	vc := NewVersionChecker()
+	vc := NewVersionChecker(nil)
 	if !vc.skipCheck {
 		t.Error("Expected skipCheck to be true when SHELLEY_SKIP_VERSION_CHECK=true")
 	}

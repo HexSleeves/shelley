@@ -26,6 +26,7 @@ func TestAcceptUserMessageFailsWhenImmediatePersistenceFails(t *testing.T) {
 		h.server.toolSetConfig,
 		func(context.Context, llm.Message, llm.Usage) error { return recordErr },
 		nil,
+		"",
 	)
 	t.Cleanup(func() {
 		if manager.loopCancel != nil {

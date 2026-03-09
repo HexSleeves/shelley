@@ -43,6 +43,7 @@ type ConversationManager struct {
 	hasConversationEvents bool
 	cwd                   string // working directory for tools
 	userEmail             string // exe.dev auth email, from X-ExeDev-Email header
+	systemPromptTemplate  string // custom system prompt template (optional)
 
 	// agentWorking tracks whether the agent is currently working.
 	// This is explicitly managed and broadcast to subscribers when it changes.
@@ -54,7 +55,7 @@ type ConversationManager struct {
 }
 
 // NewConversationManager constructs a manager with dependencies but defers hydration until needed.
-func NewConversationManager(conversationID string, database *db.DB, baseLogger *slog.Logger, toolSetConfig claudetool.ToolSetConfig, recordMessage loop.MessageRecordFunc, onStateChange func(ConversationState)) *ConversationManager {
+func NewConversationManager(conversationID string, database *db.DB, baseLogger *slog.Logger, toolSetConfig claudetool.ToolSetConfig, recordMessage loop.MessageRecordFunc, onStateChange func(ConversationState), systemPromptTemplate string) *ConversationManager {
 	logger := baseLogger
 	if logger == nil {
 		logger = slog.Default()
@@ -62,14 +63,15 @@ func NewConversationManager(conversationID string, database *db.DB, baseLogger *
 	logger = logger.With("conversationID", conversationID)
 
 	return &ConversationManager{
-		conversationID: conversationID,
-		db:             database,
-		lastActivity:   time.Now(),
-		recordMessage:  recordMessage,
-		logger:         logger,
-		toolSetConfig:  toolSetConfig,
-		subpub:         subpub.New[StreamResponse](),
-		onStateChange:  onStateChange,
+		conversationID:       conversationID,
+		db:                   database,
+		lastActivity:         time.Now(),
+		recordMessage:        recordMessage,
+		logger:               logger,
+		toolSetConfig:        toolSetConfig,
+		subpub:               subpub.New[StreamResponse](),
+		onStateChange:        onStateChange,
+		systemPromptTemplate: systemPromptTemplate,
 	}
 }
 
@@ -275,6 +277,9 @@ func (cm *ConversationManager) createSystemPrompt(ctx context.Context) (*generat
 	var opts []SystemPromptOption
 	if cm.userEmail != "" {
 		opts = append(opts, WithUserEmail(cm.userEmail))
+	}
+	if cm.systemPromptTemplate != "" {
+		opts = append(opts, WithCustomTemplate(cm.systemPromptTemplate))
 	}
 	systemPrompt, err := GenerateSystemPrompt(cm.cwd, opts...)
 	if err != nil {

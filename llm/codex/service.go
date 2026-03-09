@@ -686,6 +686,8 @@ func (s *Service) toLLMUsage(usage responsesUsage, headers http.Header) llm.Usag
 // TokenContextWindow returns the maximum token context window size for this service
 func (s *Service) TokenContextWindow() int {
 	switch s.Model {
+	case "gpt-5.4", "gpt-5.4-thinking-low", "gpt-5.4-thinking-medium", "gpt-5.4-thinking-high":
+		return 1000000
 	case "gpt-5.3-codex", "gpt-5.3-codex-thinking-low", "gpt-5.3-codex-thinking-medium", "gpt-5.3-codex-thinking-high":
 		return 288000
 	case "gpt-5.2-codex", "gpt-5.2-codex-thinking-low", "gpt-5.2-codex-thinking-medium", "gpt-5.2-codex-thinking-high":

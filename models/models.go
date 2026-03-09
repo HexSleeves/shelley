@@ -57,6 +57,9 @@ type Model struct {
 	// GatewayEnabled indicates whether this model is available when using a gateway
 	GatewayEnabled bool
 
+	// OAuthFallback indicates this model can also be exposed through OAuth credentials.
+	OAuthFallback string
+
 	// Factory creates an llm.Service instance for this model
 	Factory func(config *Config, httpc *http.Client) (llm.Service, error)
 }
@@ -424,36 +427,61 @@ func NewManager(cfg *Config) (*Manager, error) {
 	manager.httpc = httpc
 	manager.cfg = cfg
 
-	// Load built-in models first
-	useGateway := cfg.Gateway != ""
-	for _, model := range All() {
-		// Skip non-gateway-enabled models when using a gateway
-		if useGateway && !model.GatewayEnabled {
-			continue
-		}
-		svc, err := model.Factory(cfg, httpc)
-		if err != nil {
-			// Model not available (e.g., missing API key) - skip it
-			continue
-		}
-
-		manager.services[model.ID] = serviceEntry{
-			service:     svc,
-			provider:    model.Provider,
-			modelID:     model.ID,
-			source:      model.Source(cfg),
-			displayName: model.ID, // built-in models use ID as display name
-			tags:        model.Tags,
-		}
-		manager.modelOrder = append(manager.modelOrder, model.ID)
-	}
-
-	// Load custom models from database
-	if err := manager.loadCustomModels(); err != nil && cfg.Logger != nil {
-		cfg.Logger.Warn("Failed to load custom models", "error", err)
+	if err := manager.reloadModels(); err != nil && cfg.Logger != nil {
+		cfg.Logger.Warn("Failed to load models", "error", err)
 	}
 
 	return manager, nil
+}
+
+func (m *Manager) reloadModels() error {
+	m.services = make(map[string]serviceEntry)
+	m.modelOrder = nil
+
+	m.loadBuiltInModels()
+	return m.loadCustomModels()
+}
+
+func (m *Manager) loadBuiltInModels() {
+	useGateway := m.cfg.Gateway != ""
+	for _, model := range All() {
+		if useGateway && !model.GatewayEnabled {
+			continue
+		}
+
+		svc, err := model.Factory(m.cfg, m.httpc)
+		if err == nil {
+			m.services[model.ID] = serviceEntry{
+				service:     svc,
+				provider:    model.Provider,
+				modelID:     model.ID,
+				source:      model.Source(m.cfg),
+				displayName: model.ID,
+				tags:        model.Tags,
+			}
+			m.modelOrder = append(m.modelOrder, model.ID)
+		}
+
+		if model.OAuthFallback == "" || m.db == nil {
+			continue
+		}
+
+		oauthService := m.createOAuthService(model)
+		if oauthService == nil {
+			continue
+		}
+
+		oauthModelID := model.ID + "-oauth"
+		m.services[oauthModelID] = serviceEntry{
+			service:     oauthService,
+			provider:    model.Provider,
+			modelID:     oauthModelID,
+			source:      "OAuth",
+			displayName: oauthModelID,
+			tags:        model.Tags,
+		}
+		m.modelOrder = append(m.modelOrder, oauthModelID)
+	}
 }
 
 // loadCustomModels loads custom models from the database into the manager.
@@ -496,24 +524,7 @@ func (m *Manager) loadCustomModels() error {
 // RefreshCustomModels reloads custom models from the database.
 // Call this after adding or removing custom models via the UI.
 func (m *Manager) RefreshCustomModels() error {
-	if m.db == nil {
-		return nil
-	}
-
-	// Remove existing custom models from services and modelOrder
-	newOrder := make([]string, 0, len(m.modelOrder))
-	for _, id := range m.modelOrder {
-		entry, ok := m.services[id]
-		if ok && entry.source != string(SourceCustom) {
-			newOrder = append(newOrder, id)
-		} else {
-			delete(m.services, id)
-		}
-	}
-	m.modelOrder = newOrder
-
-	// Reload custom models
-	return m.loadCustomModels()
+	return m.reloadModels()
 }
 
 // GetService returns the LLM service for the given model ID, wrapped with logging
@@ -640,5 +651,39 @@ func (m *Manager) createCodexService(model *generated.Model) llm.Service {
 		MaxTokens:     int(model.MaxTokens),
 		HTTPC:         m.httpc,
 		ThinkingLevel: thinkingLevel,
+	}
+}
+
+func (m *Manager) createOAuthService(model Model) llm.Service {
+	switch model.OAuthFallback {
+	case "codex":
+	default:
+		if m.logger != nil {
+			m.logger.Error("Unknown OAuth fallback provider for model", "model_id", model.ID, "provider", model.OAuthFallback)
+		}
+		return nil
+	}
+
+	cred, err := m.db.GetOAuthCredentials(context.Background(), model.OAuthFallback)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if m.logger != nil {
+			m.logger.Error("Failed to get OAuth credentials", "provider", model.OAuthFallback, "error", err)
+		}
+		return nil
+	}
+
+	accountID := ""
+	if cred.AccountID != nil {
+		accountID = *cred.AccountID
+	}
+
+	return &codex.Service{
+		AccessToken: cred.AccessToken,
+		AccountID:   accountID,
+		Model:       model.ID,
+		HTTPC:       m.httpc,
 	}
 }

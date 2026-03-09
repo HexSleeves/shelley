@@ -220,40 +220,45 @@ type ConversationListUpdate struct {
 
 // Server manages the HTTP API and active conversations
 type Server struct {
-	db                  *db.DB
-	llmManager          LLMProvider
-	toolSetConfig       claudetool.ToolSetConfig
-	activeConversations map[string]*ConversationManager
-	mu                  sync.Mutex
-	logger              *slog.Logger
-	predictableOnly     bool
-	terminalURL         string
-	defaultModel        string
-	links               []Link
-	requireHeader       string
-	conversationGroup   singleflight.Group[string, *ConversationManager]
-	versionChecker      *VersionChecker
-	notifDispatcher     *notifications.Dispatcher
-	shutdownCh          chan struct{} // Signals background routines to stop
-	listenPort          int           // TCP port the server is listening on
+	db                   *db.DB
+	llmManager           LLMProvider
+	toolSetConfig        claudetool.ToolSetConfig
+	activeConversations  map[string]*ConversationManager
+	mu                   sync.Mutex
+	codexAuthMu          sync.Mutex
+	pendingCodexAuth     map[string]codexAuthState
+	logger               *slog.Logger
+	predictableOnly      bool
+	terminalURL          string
+	defaultModel         string
+	systemPromptTemplate string
+	links                []Link
+	requireHeader        string
+	conversationGroup    singleflight.Group[string, *ConversationManager]
+	versionChecker       *VersionChecker
+	notifDispatcher      *notifications.Dispatcher
+	shutdownCh           chan struct{} // Signals background routines to stop
+	listenPort           int           // TCP port the server is listening on
 }
 
 // NewServer creates a new server instance
-func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool.ToolSetConfig, logger *slog.Logger, predictableOnly bool, terminalURL, defaultModel, requireHeader string, links []Link) *Server {
+func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool.ToolSetConfig, logger *slog.Logger, predictableOnly bool, terminalURL, defaultModel, requireHeader string, links []Link, updateSource *UpdateSourceConfig, systemPromptTemplate string) *Server {
 	s := &Server{
-		db:                  database,
-		llmManager:          llmManager,
-		toolSetConfig:       toolSetConfig,
-		activeConversations: make(map[string]*ConversationManager),
-		logger:              logger,
-		predictableOnly:     predictableOnly,
-		terminalURL:         terminalURL,
-		defaultModel:        defaultModel,
-		requireHeader:       requireHeader,
-		links:               links,
-		versionChecker:      NewVersionChecker(),
-		notifDispatcher:     notifications.NewDispatcher(logger),
-		shutdownCh:          make(chan struct{}),
+		db:                   database,
+		llmManager:           llmManager,
+		toolSetConfig:        toolSetConfig,
+		activeConversations:  make(map[string]*ConversationManager),
+		pendingCodexAuth:     make(map[string]codexAuthState),
+		logger:               logger,
+		predictableOnly:      predictableOnly,
+		terminalURL:          terminalURL,
+		defaultModel:         defaultModel,
+		systemPromptTemplate: systemPromptTemplate,
+		requireHeader:        requireHeader,
+		links:                links,
+		versionChecker:       NewVersionChecker(updateSource),
+		notifDispatcher:      notifications.NewDispatcher(logger),
+		shutdownCh:           make(chan struct{}),
 	}
 
 	// Set up subagent support
@@ -710,7 +715,7 @@ func (s *Server) getOrCreateConversationManagerWithConfig(ctx context.Context, c
 			s.publishConversationState(state)
 		}
 
-		manager := NewConversationManager(conversationID, s.db, s.logger, toolSetConfig, recordMessage, onStateChange)
+		manager := NewConversationManager(conversationID, s.db, s.logger, toolSetConfig, recordMessage, onStateChange, s.systemPromptTemplate)
 		if userEmail != "" {
 			manager.userEmail = userEmail
 		}

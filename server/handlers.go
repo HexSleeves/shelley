@@ -717,9 +717,20 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// Get LLM service for the requested model
+	// When continuing a conversation, use the conversation's model if no model specified
 	modelID := req.Model
 	if modelID == "" {
-		modelID = s.defaultModel
+		// Try to get the conversation's existing model
+		var conv generated.Conversation
+		if err := s.db.Queries(ctx, func(q *generated.Queries) error {
+			var err error
+			conv, err = q.GetConversation(ctx, conversationID)
+			return err
+		}); err == nil && conv.Model != nil && *conv.Model != "" {
+			modelID = *conv.Model
+		} else {
+			modelID = s.defaultModel
+		}
 	}
 
 	llmService, err := s.llmManager.GetService(modelID)
@@ -808,6 +819,16 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	llmService, err := s.llmManager.GetService(modelID)
+	if err != nil && modelID == s.defaultModel {
+		// Default model unavailable, try first available non-predictable
+		for _, m := range s.llmManager.GetAvailableModels() {
+			if m != "predictable" {
+				modelID = m
+				llmService, err = s.llmManager.GetService(modelID)
+				break
+			}
+		}
+	}
 	if err != nil {
 		s.logger.Error("Unsupported model requested", "model", modelID, "error", err)
 		http.Error(w, fmt.Sprintf("Unsupported model: %s", modelID), http.StatusBadRequest)

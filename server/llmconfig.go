@@ -37,8 +37,25 @@ type LLMConfig struct {
 	// Each entry is a map with at least a "type" key, plus channel-specific fields.
 	NotificationChannels []map[string]any
 
+	// UpdateSource configures where to check for updates (optional)
+	UpdateSource *UpdateSourceConfig
+
+	// SystemPrompt overrides the default system prompt template (optional)
+	// This is a Go text/template that receives SystemPromptData
+	SystemPrompt string
+
 	// DB is the database for recording LLM requests (optional)
 	DB *db.DB
 
 	Logger *slog.Logger
+}
+
+// UpdateSourceConfig configures the update source
+type UpdateSourceConfig struct {
+	// Owner is the GitHub owner/org (default: "boldsoftware")
+	Owner string `json:"owner"`
+	// Repo is the GitHub repository name (default: "shelley")
+	Repo string `json:"repo"`
+	// Branch is the branch to check for updates (default: "main")
+	Branch string `json:"branch,omitempty"`
 }
