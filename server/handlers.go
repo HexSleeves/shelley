@@ -29,6 +29,13 @@ import (
 	"shelley.exe.dev/version"
 )
 
+func derefOr(value *string, fallback string) string {
+	if value != nil && *value != "" {
+		return *value
+	}
+	return fallback
+}
+
 // handleRead serves files from limited allowed locations via /api/read?path=
 func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -568,9 +575,6 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get working states for all active conversations
-	workingStates := s.getWorkingConversations()
-
 	// Get subagent counts
 	subagentCounts, err := s.db.GetSubagentCounts(ctx)
 	if err != nil {
@@ -584,9 +588,16 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 	gitStates := make(map[string]*gitstate.GitState)
 	result := make([]ConversationWithState, len(conversations))
 	for i, conv := range conversations {
+		runtime, err := s.runtimeState.Get(ctx, conv.ConversationID, conv.Model)
+		if err != nil {
+			s.logger.Error("Failed to get conversation runtime", "conversationID", conv.ConversationID, "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
 		cws := ConversationWithState{
 			Conversation:  conv,
-			Working:       workingStates[conv.ConversationID],
+			Working:       runtime.Working,
 			SubagentCount: subagentCounts[conv.ConversationID],
 		}
 		if conv.Cwd != nil {
@@ -644,6 +655,9 @@ func (s *Server) conversationMux() *http.ServeMux {
 	mux.HandleFunc("GET /{id}/subagents", func(w http.ResponseWriter, r *http.Request) {
 		s.handleGetSubagents(w, r, r.PathValue("id"))
 	})
+	mux.HandleFunc("GET /{id}/jobs", func(w http.ResponseWriter, r *http.Request) {
+		s.handleGetConversationJobs(w, r, r.PathValue("id"))
+	})
 	return mux
 }
 
@@ -658,6 +672,7 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request, c
 	var (
 		messages     []generated.Message
 		conversation generated.Conversation
+		runtime      *generated.ConversationRuntime
 	)
 	err := s.db.Queries(ctx, func(q *generated.Queries) error {
 		var err error
@@ -678,14 +693,61 @@ func (s *Server) handleGetConversation(w http.ResponseWriter, r *http.Request, c
 		return
 	}
 
+	runtime, err = s.runtimeState.Get(ctx, conversationID, conversation.Model)
+	if err != nil {
+		s.logger.Error("Failed to get conversation runtime", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	apiMessages := toAPIMessages(messages)
 	json.NewEncoder(w).Encode(StreamResponse{
 		Messages:     apiMessages,
 		Conversation: conversation,
+		Runtime:      runtime,
+		LastEventID:  runtime.LastEventID,
 		// ConversationState is sent via the streaming endpoint, not on initial load
 		ContextWindowSize: calculateContextWindowSize(apiMessages),
 	})
+}
+
+func (s *Server) handleGetConversationJobs(w http.ResponseWriter, r *http.Request, conversationID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	jobs, err := s.jobs.ListForConversation(r.Context(), conversationID, 100)
+	if err != nil {
+		s.logger.Error("Failed to get conversation jobs", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(jobs)
+}
+
+func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request, jobID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	job, err := s.jobs.Get(r.Context(), jobID)
+	if errors.Is(err, sql.ErrNoRows) {
+		http.Error(w, "Job not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.logger.Error("Failed to get job", "jobID", jobID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(job)
 }
 
 // ChatRequest represents a chat message from the user
@@ -762,12 +824,37 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		},
 	}
 
+	job, err := s.jobs.StartJob(ctx, StartJobParams{
+		ConversationID: conversationID,
+		Kind:           JobKindTurn,
+		ModelID:        modelID,
+		Input: map[string]any{
+			"message": req.Message,
+			"model":   modelID,
+		},
+	})
+	if err != nil {
+		s.logger.Error("Failed to start turn job", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	firstMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
 	if errors.Is(err, errConversationModelMismatch) {
+		if finishErr := s.markJobFailed(ctx, job.JobID, err); finishErr != nil {
+			s.logger.Error("Failed to mark turn job failed", "conversationID", conversationID, "jobID", job.JobID, "error", finishErr)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err != nil {
+		if finishErr := s.markJobFailed(ctx, job.JobID, err); finishErr != nil {
+			s.logger.Error("Failed to mark turn job failed", "conversationID", conversationID, "jobID", job.JobID, "error", finishErr)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 		s.logger.Error("Failed to accept user message", "conversationID", conversationID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
@@ -782,6 +869,20 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 			if err != nil {
 				s.logger.Warn("Failed to generate slug for conversation", "conversationID", conversationID, "error", err)
 			} else {
+				conversation, err := s.db.GetConversationByID(ctxNoCancel, conversationID)
+				if err != nil {
+					s.logger.Error("Failed to get conversation after slug generation", "conversationID", conversationID, "error", err)
+					return
+				}
+				runtime, err := s.runtimeState.Get(ctxNoCancel, conversationID, conversation.Model)
+				if err != nil {
+					s.logger.Error("Failed to get runtime after slug generation", "conversationID", conversationID, "error", err)
+					return
+				}
+				if _, err := s.eventLog.Append(ctxNoCancel, conversationID, runtime.ActiveJobID, nil, eventTypeConversationUpdated, conversation); err != nil {
+					s.logger.Error("Failed to append conversation update event", "conversationID", conversationID, "error", err)
+					return
+				}
 				go s.notifySubscribers(ctxNoCancel, conversationID)
 			}
 		}()
@@ -876,12 +977,38 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
+	job, err := s.jobs.StartJob(ctx, StartJobParams{
+		ConversationID: conversationID,
+		Kind:           JobKindTurn,
+		ModelID:        modelID,
+		Input: map[string]any{
+			"message": req.Message,
+			"model":   modelID,
+			"new":     true,
+		},
+	})
+	if err != nil {
+		s.logger.Error("Failed to start turn job", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	firstMessage, err := manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
 	if errors.Is(err, errConversationModelMismatch) {
+		if finishErr := s.markJobFailed(ctx, job.JobID, err); finishErr != nil {
+			s.logger.Error("Failed to mark turn job failed", "conversationID", conversationID, "jobID", job.JobID, "error", finishErr)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err != nil {
+		if finishErr := s.markJobFailed(ctx, job.JobID, err); finishErr != nil {
+			s.logger.Error("Failed to mark turn job failed", "conversationID", conversationID, "jobID", job.JobID, "error", finishErr)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 		s.logger.Error("Failed to accept user message", "conversationID", conversationID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
@@ -896,6 +1023,20 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				s.logger.Warn("Failed to generate slug for conversation", "conversationID", conversationID, "error", err)
 			} else {
+				conversation, err := s.db.GetConversationByID(ctxNoCancel, conversationID)
+				if err != nil {
+					s.logger.Error("Failed to get conversation after slug generation", "conversationID", conversationID, "error", err)
+					return
+				}
+				runtime, err := s.runtimeState.Get(ctxNoCancel, conversationID, conversation.Model)
+				if err != nil {
+					s.logger.Error("Failed to get runtime after slug generation", "conversationID", conversationID, "error", err)
+					return
+				}
+				if _, err := s.eventLog.Append(ctxNoCancel, conversationID, runtime.ActiveJobID, nil, eventTypeConversationUpdated, conversation); err != nil {
+					s.logger.Error("Failed to append conversation update event", "conversationID", conversationID, "error", err)
+					return
+				}
 				go s.notifySubscribers(ctxNoCancel, conversationID)
 			}
 		}()
@@ -1025,6 +1166,13 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	runtime, err := s.runtimeState.Get(ctx, conversationID, conversation.Model)
+	if err != nil {
+		s.logger.Error("Failed to get conversation runtime", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	// Subscribe before sending the initial payload so in-place Broadcast updates
 	// cannot land between the initial fetch and the subscription setup.
 	next := manager.subpub.Subscribe(ctx, lastSeqID)
@@ -1069,10 +1217,12 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 		streamData := StreamResponse{
 			Messages:     apiMessages,
 			Conversation: conversation,
+			Runtime:      runtime,
+			LastEventID:  runtime.LastEventID,
 			ConversationState: &ConversationState{
 				ConversationID: conversationID,
-				Working:        manager.IsAgentWorking(),
-				Model:          manager.GetModel(),
+				Working:        runtime.Working,
+				Model:          derefOr(runtime.CurrentModelID, manager.GetModel()),
 			},
 			ContextWindowSize: ctxSize,
 		}
@@ -1083,10 +1233,12 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 		// Either resuming or no messages yet - send current state as heartbeat
 		streamData := StreamResponse{
 			Conversation: conversation,
+			Runtime:      runtime,
+			LastEventID:  runtime.LastEventID,
 			ConversationState: &ConversationState{
 				ConversationID: conversationID,
-				Working:        manager.IsAgentWorking(),
-				Model:          manager.GetModel(),
+				Working:        runtime.Working,
+				Model:          derefOr(runtime.CurrentModelID, manager.GetModel()),
 			},
 			Heartbeat: true,
 		}
@@ -1108,7 +1260,10 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 				return
 			case <-ticker.C:
 				// Get current conversation state for heartbeat
-				var conv generated.Conversation
+				var (
+					conv    generated.Conversation
+					runtime *generated.ConversationRuntime
+				)
 				err := s.db.Queries(ctx, func(q *generated.Queries) error {
 					var err error
 					conv, err = q.GetConversation(ctx, conversationID)
@@ -1117,13 +1272,19 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 				if err != nil {
 					continue // Skip heartbeat on error
 				}
+				runtime, err = s.runtimeState.Get(ctx, conversationID, conv.Model)
+				if err != nil {
+					continue
+				}
 
 				heartbeat := StreamResponse{
 					Conversation: conv,
+					Runtime:      runtime,
+					LastEventID:  runtime.LastEventID,
 					ConversationState: &ConversationState{
 						ConversationID: conversationID,
-						Working:        manager.IsAgentWorking(),
-						Model:          manager.GetModel(),
+						Working:        runtime.Working,
+						Model:          derefOr(runtime.CurrentModelID, manager.GetModel()),
 					},
 					Heartbeat: true,
 				}
@@ -1390,6 +1551,18 @@ func (s *Server) handleRenameConversation(w http.ResponseWriter, r *http.Request
 	conversation, err := s.db.UpdateConversationSlug(ctx, conversationID, sanitized)
 	if err != nil {
 		s.logger.Error("Failed to rename conversation", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	runtime, err := s.runtimeState.Get(ctx, conversationID, conversation.Model)
+	if err != nil {
+		s.logger.Error("Failed to get runtime for renamed conversation", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if _, err := s.eventLog.Append(ctx, conversationID, runtime.ActiveJobID, nil, eventTypeConversationUpdated, conversation); err != nil {
+		s.logger.Error("Failed to append conversation update event", "conversationID", conversationID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}

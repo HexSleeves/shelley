@@ -131,6 +131,23 @@ func (s *Server) handleDistillConversation(w http.ResponseWriter, r *http.Reques
 		Conversation: conversation,
 	})
 
+	timeoutSeconds := int64(120)
+	job, err := s.jobs.StartJob(ctx, StartJobParams{
+		ConversationID: conversationID,
+		Kind:           JobKindDistill,
+		ModelID:        modelID,
+		TimeoutSeconds: &timeoutSeconds,
+		Input: map[string]any{
+			"source_conversation_id": req.SourceConversationID,
+			"model":                  modelID,
+		},
+	})
+	if err != nil {
+		s.logger.Error("Failed to start distill job", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	// Insert a status message indicating distillation is in progress
 	sourceSlug := "unknown"
 	if sourceConv.Slug != nil {
@@ -140,7 +157,7 @@ func (s *Server) handleDistillConversation(w http.ResponseWriter, r *http.Reques
 		"distill_status": "in_progress",
 		"source_slug":    sourceSlug,
 	}
-	_, err = s.db.CreateMessage(ctx, db.CreateMessageParams{
+	statusMessage, err := s.db.CreateMessage(ctx, db.CreateMessageParams{
 		ConversationID:      conversationID,
 		Type:                db.MessageTypeSystem,
 		UserData:            statusUserData,
@@ -151,14 +168,19 @@ func (s *Server) handleDistillConversation(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
+	if _, err := s.eventLog.Append(ctx, conversationID, &job.JobID, &statusMessage.MessageID, eventTypeMessageCreated, statusMessage); err != nil {
+		s.logger.Error("Failed to append status message event", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	// Notify subscribers about the status message
-	go s.notifySubscribers(context.WithoutCancel(ctx), conversationID)
+	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversationID, statusMessage)
 
 	// Run distillation in background
 	ctxNoCancel := context.WithoutCancel(ctx)
 	go func() {
-		s.runDistillation(ctxNoCancel, conversationID, sourceSlug, modelID, messages)
+		s.runDistillation(ctxNoCancel, conversationID, job.JobID, sourceSlug, modelID, messages)
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
@@ -170,7 +192,7 @@ func (s *Server) handleDistillConversation(w http.ResponseWriter, r *http.Reques
 }
 
 // runDistillation performs the LLM-based distillation and inserts the result.
-func (s *Server) runDistillation(ctx context.Context, conversationID, sourceSlug, modelID string, messages []generated.Message) {
+func (s *Server) runDistillation(ctx context.Context, conversationID, jobID, sourceSlug, modelID string, messages []generated.Message) {
 	logger := s.logger.With("conversationID", conversationID, "sourceSlug", sourceSlug)
 
 	// Build the transcript for the LLM
@@ -180,7 +202,7 @@ func (s *Server) runDistillation(ctx context.Context, conversationID, sourceSlug
 	svc, err := s.llmManager.GetService(modelID)
 	if err != nil {
 		logger.Error("Failed to get LLM service for distillation", "model", modelID, "error", err)
-		s.insertDistillError(ctx, conversationID, fmt.Sprintf("Failed to get model %q: %v", modelID, err))
+		s.insertDistillError(ctx, conversationID, jobID, fmt.Sprintf("Failed to get model %q: %v", modelID, err))
 		return
 	}
 
@@ -205,7 +227,7 @@ func (s *Server) runDistillation(ctx context.Context, conversationID, sourceSlug
 	})
 	if err != nil {
 		logger.Error("LLM distillation failed", "error", err)
-		s.insertDistillError(ctx, conversationID, fmt.Sprintf("Distillation failed: %v", err))
+		s.insertDistillError(ctx, conversationID, jobID, fmt.Sprintf("Distillation failed: %v", err))
 		return
 	}
 
@@ -219,14 +241,20 @@ func (s *Server) runDistillation(ctx context.Context, conversationID, sourceSlug
 
 	if distilledText == "" {
 		logger.Error("LLM returned empty distillation")
-		s.insertDistillError(ctx, conversationID, "Distillation returned empty result")
+		s.insertDistillError(ctx, conversationID, jobID, "Distillation returned empty result")
 		return
 	}
 
 	logger.Info("Distillation complete", "output_length", len(distilledText))
 
 	// Update the status message to "complete"
-	s.updateDistillStatus(ctx, conversationID, "complete")
+	if err := s.updateDistillStatus(ctx, conversationID, "complete"); err != nil {
+		logger.Error("Failed to update distill status", "error", err)
+		if finishErr := s.markJobFailed(ctx, jobID, err); finishErr != nil {
+			logger.Error("Failed to mark distill job failed", "jobID", jobID, "error", finishErr)
+		}
+		return
+	}
 
 	// Insert the distilled content as a user message
 	userMessage := llm.Message{
@@ -237,6 +265,9 @@ func (s *Server) runDistillation(ctx context.Context, conversationID, sourceSlug
 	}
 	if err := s.recordMessage(ctx, conversationID, userMessage, llm.Usage{}, map[string]string{"distilled": "true"}); err != nil {
 		logger.Error("Failed to record distilled message", "error", err)
+		if finishErr := s.markJobFailed(ctx, jobID, err); finishErr != nil {
+			logger.Error("Failed to mark distill job failed", "jobID", jobID, "error", finishErr)
+		}
 		return
 	}
 
@@ -247,13 +278,44 @@ func (s *Server) runDistillation(ctx context.Context, conversationID, sourceSlug
 	if err != nil {
 		logger.Warn("Failed to generate slug", "error", err)
 	} else {
+		conversation, err := s.db.GetConversationByID(ctx, conversationID)
+		if err != nil {
+			logger.Error("Failed to get conversation after distill slug generation", "error", err)
+		} else {
+			runtime, err := s.runtimeState.Get(ctx, conversationID, conversation.Model)
+			if err != nil {
+				logger.Error("Failed to get runtime after distill slug generation", "error", err)
+			} else if _, err := s.eventLog.Append(ctx, conversationID, runtime.ActiveJobID, nil, eventTypeConversationUpdated, conversation); err != nil {
+				logger.Error("Failed to append conversation update event", "error", err)
+			}
+			go s.publishConversationListUpdate(ConversationListUpdate{
+				Type:         "update",
+				Conversation: conversation,
+			})
+		}
 		go s.notifySubscribers(ctx, conversationID)
+	}
+
+	if _, err := s.jobs.FinishJob(ctx, FinishJobParams{
+		JobID:  jobID,
+		Status: JobStatusSucceeded,
+		Output: map[string]any{
+			"source_slug": sourceSlug,
+		},
+	}); err != nil {
+		logger.Error("Failed to finish distill job", "jobID", jobID, "error", err)
+		return
+	}
+	if err := s.broadcastPersistedConversationStateUpdate(ctx, conversationID); err != nil {
+		logger.Error("Failed to broadcast distill conversation state", "jobID", jobID, "error", err)
 	}
 }
 
 // insertDistillError updates status to error and inserts an error message.
-func (s *Server) insertDistillError(ctx context.Context, conversationID, errMsg string) {
-	s.updateDistillStatus(ctx, conversationID, "error")
+func (s *Server) insertDistillError(ctx context.Context, conversationID, jobID, errMsg string) {
+	if err := s.updateDistillStatus(ctx, conversationID, "error"); err != nil {
+		s.logger.Error("Failed to update distill status", "conversationID", conversationID, "error", err)
+	}
 
 	// Insert an error message so the user knows what happened
 	errorMessage := llm.Message{
@@ -266,15 +328,27 @@ func (s *Server) insertDistillError(ctx context.Context, conversationID, errMsg 
 	if err := s.recordMessage(ctx, conversationID, errorMessage, llm.Usage{}); err != nil {
 		s.logger.Error("Failed to record distill error message", "conversationID", conversationID, "error", err)
 	}
+	if _, err := s.jobs.FinishJob(ctx, FinishJobParams{
+		JobID:  jobID,
+		Status: JobStatusFailed,
+		ErrorPayload: map[string]any{
+			"error": errMsg,
+		},
+	}); err != nil {
+		s.logger.Error("Failed to finish distill job", "conversationID", conversationID, "jobID", jobID, "error", err)
+		return
+	}
+	if err := s.broadcastPersistedConversationStateUpdate(ctx, conversationID); err != nil {
+		s.logger.Error("Failed to broadcast distill conversation state", "conversationID", conversationID, "jobID", jobID, "error", err)
+	}
 }
 
 // updateDistillStatus updates the system status message in a conversation.
-func (s *Server) updateDistillStatus(ctx context.Context, conversationID, status string) {
+func (s *Server) updateDistillStatus(ctx context.Context, conversationID, status string) error {
 	// Find the system message with distill_status
 	messages, err := s.db.ListMessagesByType(ctx, conversationID, db.MessageTypeSystem)
 	if err != nil {
-		s.logger.Error("Failed to list system messages", "conversationID", conversationID, "error", err)
-		return
+		return fmt.Errorf("failed to list system messages: %w", err)
 	}
 
 	for _, msg := range messages {
@@ -290,13 +364,12 @@ func (s *Server) updateDistillStatus(ctx context.Context, conversationID, status
 			userData["distill_status"] = status
 			newData, err := json.Marshal(userData)
 			if err != nil {
-				s.logger.Error("Failed to marshal distill status", "error", err)
-				return
+				return fmt.Errorf("failed to marshal distill status: %w", err)
 			}
 			newDataStr := string(newData)
 			bgCtx := context.WithoutCancel(ctx)
 			if err := s.db.UpdateMessageUserData(bgCtx, msg.MessageID, &newDataStr); err != nil {
-				s.logger.Error("Failed to update distill status", "messageID", msg.MessageID, "error", err)
+				return fmt.Errorf("failed to update distill status: %w", err)
 			}
 			// Re-fetch the updated message and broadcast it to SSE subscribers
 			// so the client sees the status change (spinner → complete).
@@ -307,11 +380,15 @@ func (s *Server) updateDistillStatus(ctx context.Context, conversationID, status
 			// see the update.
 			updatedMsg, err := s.db.GetMessageByID(bgCtx, msg.MessageID)
 			if err == nil {
-				s.broadcastMessageUpdate(bgCtx, conversationID, updatedMsg)
+				if err := s.broadcastMessageUpdate(bgCtx, conversationID, updatedMsg); err != nil {
+					return err
+				}
+				return nil
 			}
-			return
+			return fmt.Errorf("failed to reload updated distill status message: %w", err)
 		}
 	}
+	return fmt.Errorf("distill status message not found")
 }
 
 // truncateUTF8 truncates s to approximately maxBytes without splitting a UTF-8 character.

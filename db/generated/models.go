@@ -20,6 +20,44 @@ type Conversation struct {
 	Model                *string   `json:"model"`
 }
 
+type ConversationEvent struct {
+	EventID        int64     `json:"event_id"`
+	ConversationID string    `json:"conversation_id"`
+	JobID          *string   `json:"job_id"`
+	MessageID      *string   `json:"message_id"`
+	StreamVersion  int64     `json:"stream_version"`
+	EventType      string    `json:"event_type"`
+	PayloadJson    string    `json:"payload_json"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type ConversationRuntime struct {
+	ConversationID string    `json:"conversation_id"`
+	Working        bool      `json:"working"`
+	ActiveJobID    *string   `json:"active_job_id"`
+	LastEventID    int64     `json:"last_event_id"`
+	CurrentModelID *string   `json:"current_model_id"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type JobRun struct {
+	JobID            string     `json:"job_id"`
+	ConversationID   string     `json:"conversation_id"`
+	ParentJobID      *string    `json:"parent_job_id"`
+	Kind             string     `json:"kind"`
+	Status           string     `json:"status"`
+	TriggerMessageID *string    `json:"trigger_message_id"`
+	ModelID          *string    `json:"model_id"`
+	TimeoutSeconds   *int64     `json:"timeout_seconds"`
+	InputJson        string     `json:"input_json"`
+	OutputJson       *string    `json:"output_json"`
+	ErrorJson        *string    `json:"error_json"`
+	AttemptCount     int64      `json:"attempt_count"`
+	CreatedAt        time.Time  `json:"created_at"`
+	StartedAt        *time.Time `json:"started_at"`
+	FinishedAt       *time.Time `json:"finished_at"`
+}
+
 type LlmRequest struct {
 	ID              int64     `json:"id"`
 	ConversationID  *string   `json:"conversation_id"`
@@ -92,4 +130,39 @@ type Setting struct {
 	Key       string    `json:"key"`
 	Value     string    `json:"value"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type SubagentMetric struct {
+	JobID                  string     `json:"job_id"`
+	ParentConversationID   *string    `json:"parent_conversation_id"`
+	SubagentConversationID string     `json:"subagent_conversation_id"`
+	ModelID                *string    `json:"model_id"`
+	StartedAt              *time.Time `json:"started_at"`
+	FinishedAt             *time.Time `json:"finished_at"`
+	Outcome                *string    `json:"outcome"`
+	TimeoutSeconds         *int64     `json:"timeout_seconds"`
+	TotalTokens            int64      `json:"total_tokens"`
+	RetryCount             int64      `json:"retry_count"`
+	CostUsd                *float64   `json:"cost_usd"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+}
+
+type TurnMetric struct {
+	JobID                    string    `json:"job_id"`
+	ModelID                  *string   `json:"model_id"`
+	LatencyMs                *int64    `json:"latency_ms"`
+	FirstTokenLatencyMs      *int64    `json:"first_token_latency_ms"`
+	InputTokens              int64     `json:"input_tokens"`
+	OutputTokens             int64     `json:"output_tokens"`
+	CacheReadInputTokens     int64     `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64     `json:"cache_creation_input_tokens"`
+	ReasoningTokens          int64     `json:"reasoning_tokens"`
+	ToolCallCount            int64     `json:"tool_call_count"`
+	RetryCount               int64     `json:"retry_count"`
+	CancellationReason       *string   `json:"cancellation_reason"`
+	TimeoutReason            *string   `json:"timeout_reason"`
+	CostUsd                  *float64  `json:"cost_usd"`
+	CreatedAt                time.Time `json:"created_at"`
+	UpdatedAt                time.Time `json:"updated_at"`
 }

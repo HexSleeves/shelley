@@ -65,10 +65,12 @@ type ConversationWithState struct {
 
 // StreamResponse represents the response format for conversation streaming
 type StreamResponse struct {
-	Messages          []APIMessage           `json:"messages"`
-	Conversation      generated.Conversation `json:"conversation"`
-	ConversationState *ConversationState     `json:"conversation_state,omitempty"`
-	ContextWindowSize uint64                 `json:"context_window_size,omitempty"`
+	Messages          []APIMessage                   `json:"messages"`
+	Conversation      generated.Conversation         `json:"conversation"`
+	Runtime           *generated.ConversationRuntime `json:"runtime,omitempty"`
+	LastEventID       int64                          `json:"last_event_id,omitempty"`
+	ConversationState *ConversationState             `json:"conversation_state,omitempty"`
+	ContextWindowSize uint64                         `json:"context_window_size,omitempty"`
 	// ConversationListUpdate is set when another conversation in the list changed
 	ConversationListUpdate *ConversationListUpdate `json:"conversation_list_update,omitempty"`
 	// Heartbeat indicates this is a heartbeat message (no new data, just keeping connection alive)
@@ -236,6 +238,9 @@ type Server struct {
 	requireHeader        string
 	conversationGroup    singleflight.Group[string, *ConversationManager]
 	versionChecker       *VersionChecker
+	runtimeState         *RuntimeStateService
+	eventLog             *EventLogService
+	jobs                 *JobService
 	notifDispatcher      *notifications.Dispatcher
 	shutdownCh           chan struct{} // Signals background routines to stop
 	listenPort           int           // TCP port the server is listening on
@@ -257,8 +262,15 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 		requireHeader:        requireHeader,
 		links:                links,
 		versionChecker:       NewVersionChecker(updateSource),
+		runtimeState:         NewRuntimeStateService(database),
+		eventLog:             NewEventLogService(database),
+		jobs:                 NewJobService(database, logger),
 		notifDispatcher:      notifications.NewDispatcher(logger),
 		shutdownCh:           make(chan struct{}),
+	}
+
+	if err := s.jobs.ReconcileInterruptedJobs(context.Background()); err != nil {
+		panic(fmt.Errorf("failed to reconcile interrupted jobs: %w", err))
 	}
 
 	// Set up subagent support
@@ -273,6 +285,14 @@ func NewServer(database *db.DB, llmManager LLMProvider, toolSetConfig claudetool
 func (s *Server) RegisterNotificationChannel(ch notifications.Channel) {
 	s.notifDispatcher.Register(ch)
 	s.logger.Info("registered notification channel", "channel", ch.Name())
+}
+
+func (s *Server) jobsMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{id}", func(w http.ResponseWriter, r *http.Request) {
+		s.handleGetJob(w, r, r.PathValue("id"))
+	})
+	return mux
 }
 
 // RegisterRoutes registers HTTP routes on the given mux
@@ -308,6 +328,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Models API (dynamic list refresh)
 	mux.Handle("/api/models", http.HandlerFunc(s.handleModels))
+	mux.Handle("/api/jobs/", http.StripPrefix("/api/jobs", s.jobsMux()))
 
 	// Codex OAuth
 	mux.Handle("/api/codex-auth/status", http.HandlerFunc(s.handleCodexAuthStatus))
@@ -806,11 +827,24 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 		return fmt.Errorf("failed to create message: %w", err)
 	}
 
+	activeJobID, err := s.jobs.ActiveJobID(ctx, conversationID)
+	if err != nil {
+		return fmt.Errorf("failed to get active job: %w", err)
+	}
+
 	// Update conversation's last updated timestamp for correct ordering
 	if err := s.db.QueriesTx(ctx, func(q *generated.Queries) error {
 		return q.UpdateConversationTimestamp(ctx, conversationID)
 	}); err != nil {
-		s.logger.Warn("Failed to update conversation timestamp", "conversationID", conversationID, "error", err)
+		return fmt.Errorf("failed to update conversation timestamp: %w", err)
+	}
+
+	if _, err := s.eventLog.Append(ctx, conversationID, activeJobID, &createdMsg.MessageID, eventTypeMessageCreated, createdMsg); err != nil {
+		return fmt.Errorf("failed to append message event: %w", err)
+	}
+
+	if err := s.jobs.CompleteActiveJobFromMessage(ctx, conversationID, createdMsg, message); err != nil {
+		return fmt.Errorf("failed to complete active job: %w", err)
 	}
 
 	// Touch active manager activity time if present
@@ -826,6 +860,42 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 	// we still want the notification to complete so SSE clients see the message immediately
 	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversationID, createdMsg)
 
+	return nil
+}
+
+func (s *Server) markJobFailed(ctx context.Context, jobID string, cause error) error {
+	_, err := s.jobs.FinishJob(context.WithoutCancel(ctx), FinishJobParams{
+		JobID:  jobID,
+		Status: JobStatusFailed,
+		ErrorPayload: map[string]any{
+			"error": cause.Error(),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to mark job %s failed: %w", jobID, err)
+	}
+	return nil
+}
+
+func (s *Server) broadcastPersistedConversationStateUpdate(ctx context.Context, conversationID string) error {
+	conversation, err := s.db.GetConversationByID(ctx, conversationID)
+	if err != nil {
+		return fmt.Errorf("failed to get conversation for state broadcast: %w", err)
+	}
+	runtime, err := s.runtimeState.Get(ctx, conversationID, conversation.Model)
+	if err != nil {
+		return fmt.Errorf("failed to get runtime for state broadcast: %w", err)
+	}
+	s.broadcastConversationStateUpdate(ConversationState{
+		ConversationID: conversationID,
+		Working:        runtime.Working,
+		Model: func() string {
+			if runtime.CurrentModelID == nil {
+				return ""
+			}
+			return *runtime.CurrentModelID
+		}(),
+	})
 	return nil
 }
 
@@ -892,12 +962,20 @@ func (s *Server) notifySubscribers(ctx context.Context, conversationID string) {
 	}
 	manager.SetConversation(conversation)
 
+	runtime, err := s.runtimeState.Get(ctx, conversationID, conversation.Model)
+	if err != nil {
+		s.logger.Error("Failed to get runtime for notification", "conversationID", conversationID, "error", err)
+		return
+	}
+
 	// Broadcast conversation update with no new messages.
 	// Using Broadcast instead of Publish ensures this metadata-only update
 	// doesn't race with notifySubscribersNewMessage which uses Publish with sequence IDs.
 	streamData := StreamResponse{
 		Messages:     nil, // No new messages, just conversation update
 		Conversation: conversation,
+		Runtime:      runtime,
+		LastEventID:  runtime.LastEventID,
 	}
 	manager.subpub.Broadcast(streamData)
 
@@ -927,6 +1005,12 @@ func (s *Server) notifySubscribersNewMessage(ctx context.Context, conversationID
 	conversation.UpdatedAt = newMsg.CreatedAt
 	manager.SetConversation(conversation)
 
+	runtime, err := s.runtimeState.Get(ctx, conversationID, conversation.Model)
+	if err != nil {
+		s.logger.Error("Failed to get runtime for new-message notification", "conversationID", conversationID, "error", err)
+		return
+	}
+
 	// Convert the single new message to API format
 	apiMessages := toAPIMessages([]generated.Message{*newMsg})
 
@@ -939,6 +1023,8 @@ func (s *Server) notifySubscribersNewMessage(ctx context.Context, conversationID
 	streamData := StreamResponse{
 		Messages:     apiMessages,
 		Conversation: conversation,
+		Runtime:      runtime,
+		LastEventID:  runtime.LastEventID,
 		// ContextWindowSize: 0 for messages without usage data (user/tool messages).
 		// With omitempty, 0 is omitted from JSON, so the UI keeps its cached value.
 		// Only agent messages have usage data, so context window updates when they arrive.
@@ -957,14 +1043,10 @@ func (s *Server) notifySubscribersNewMessage(ctx context.Context, conversationID
 // Unlike notifySubscribersNewMessage (which uses Publish with a sequence ID), this uses
 // Broadcast so subscribers receive the update even if they already have the original message.
 // Use this for in-place updates to existing messages (e.g., distill status changes).
-func (s *Server) broadcastMessageUpdate(ctx context.Context, conversationID string, updatedMsg *generated.Message) {
+func (s *Server) broadcastMessageUpdate(ctx context.Context, conversationID string, updatedMsg *generated.Message) error {
 	s.mu.Lock()
 	manager, exists := s.activeConversations[conversationID]
 	s.mu.Unlock()
-
-	if !exists {
-		return
-	}
 
 	var conversation generated.Conversation
 	err := s.db.Queries(ctx, func(q *generated.Queries) error {
@@ -973,15 +1055,30 @@ func (s *Server) broadcastMessageUpdate(ctx context.Context, conversationID stri
 		return err
 	})
 	if err != nil {
-		s.logger.Error("Failed to get conversation data for broadcast", "conversationID", conversationID, "error", err)
-		return
+		return fmt.Errorf("failed to get conversation data for broadcast: %w", err)
 	}
+
+	runtime, err := s.runtimeState.Get(ctx, conversationID, conversation.Model)
+	if err != nil {
+		return fmt.Errorf("failed to get runtime for broadcast: %w", err)
+	}
+
+	if _, err := s.eventLog.Append(ctx, conversationID, runtime.ActiveJobID, &updatedMsg.MessageID, eventTypeMessageUpdated, updatedMsg); err != nil {
+		return fmt.Errorf("failed to append message update event: %w", err)
+	}
+
+	if !exists {
+		return nil
+	}
+
 	manager.SetConversation(conversation)
 
 	apiMessages := toAPIMessages([]generated.Message{*updatedMsg})
 	streamData := StreamResponse{
 		Messages:     apiMessages,
 		Conversation: conversation,
+		Runtime:      runtime,
+		LastEventID:  runtime.LastEventID,
 	}
 	manager.subpub.Broadcast(streamData)
 
@@ -989,6 +1086,7 @@ func (s *Server) broadcastMessageUpdate(ctx context.Context, conversationID stri
 		Type:         "update",
 		Conversation: &conversation,
 	})
+	return nil
 }
 
 // publishConversationListUpdate broadcasts a conversation list update to ALL active
@@ -1060,6 +1158,14 @@ func (s *Server) publishConversationState(state ConversationState) {
 		notifEvent = &event
 	}
 
+	s.broadcastConversationStateUpdateWithNotification(state, notifEvent)
+}
+
+func (s *Server) broadcastConversationStateUpdate(state ConversationState) {
+	s.broadcastConversationStateUpdateWithNotification(state, nil)
+}
+
+func (s *Server) broadcastConversationStateUpdateWithNotification(state ConversationState, notifEvent *notifications.Event) {
 	s.mu.Lock()
 	managers := make([]*ConversationManager, 0, len(s.activeConversations))
 	for _, manager := range s.activeConversations {
@@ -1076,20 +1182,6 @@ func (s *Server) publishConversationState(state ConversationState) {
 	}
 }
 
-// getWorkingConversations returns a map of conversation IDs that are currently working.
-func (s *Server) getWorkingConversations() map[string]bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	working := make(map[string]bool)
-	for id, manager := range s.activeConversations {
-		if manager.IsAgentWorking() {
-			working[id] = true
-		}
-	}
-	return working
-}
-
 // IsAgentWorking returns whether the agent is currently working on the given conversation.
 // Returns false if the conversation doesn't have an active manager.
 func (s *Server) IsAgentWorking(conversationID string) bool {
@@ -1097,7 +1189,12 @@ func (s *Server) IsAgentWorking(conversationID string) bool {
 	manager, exists := s.activeConversations[conversationID]
 	s.mu.Unlock()
 	if !exists {
-		return false
+		runtime, err := s.runtimeState.Get(context.Background(), conversationID, nil)
+		if err != nil {
+			s.logger.Error("Failed to get runtime for IsAgentWorking", "conversationID", conversationID, "error", err)
+			return false
+		}
+		return runtime.Working
 	}
 	return manager.IsAgentWorking()
 }

@@ -78,9 +78,40 @@ func (r *SubagentRunner) RunSubagent(ctx context.Context, conversationID, prompt
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: prompt}},
 	}
 
+	var parentJobID *string
+	conversation, err := s.db.GetConversationByID(ctx, conversationID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get subagent conversation: %w", err)
+	}
+	if conversation.ParentConversationID != nil {
+		parentRuntime, err := s.runtimeState.Get(ctx, *conversation.ParentConversationID, nil)
+		if err != nil {
+			return "", fmt.Errorf("failed to get parent conversation runtime: %w", err)
+		}
+		parentJobID = parentRuntime.ActiveJobID
+	}
+
+	job, err := s.jobs.StartJob(ctx, StartJobParams{
+		ConversationID: conversationID,
+		ParentJobID:    parentJobID,
+		Kind:           JobKindSubagent,
+		ModelID:        modelID,
+		Input: map[string]any{
+			"prompt": prompt,
+			"model":  modelID,
+			"wait":   wait,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to start subagent job: %w", err)
+	}
+
 	// Accept the user message (this starts processing)
 	_, err = manager.AcceptUserMessage(ctx, llmService, modelID, userMessage)
 	if err != nil {
+		if finishErr := s.markJobFailed(ctx, job.JobID, err); finishErr != nil {
+			return "", finishErr
+		}
 		return "", fmt.Errorf("failed to accept user message: %w", err)
 	}
 
@@ -139,18 +170,11 @@ func (r *SubagentRunner) waitForResponse(ctx context.Context, conversationID, mo
 
 func (r *SubagentRunner) isAgentWorking(ctx context.Context, conversationID string) (bool, error) {
 	s := r.server
-
-	// Get the conversation manager - it tracks the working state
-	s.mu.Lock()
-	mgr, ok := s.activeConversations[conversationID]
-	s.mu.Unlock()
-
-	if !ok {
-		// No active manager means the agent is not working
-		return false, nil
+	runtime, err := s.runtimeState.Get(ctx, conversationID, nil)
+	if err != nil {
+		return false, err
 	}
-
-	return mgr.IsAgentWorking(), nil
+	return runtime.Working, nil
 }
 
 func (r *SubagentRunner) getLastAssistantResponse(ctx context.Context, conversationID string) (string, error) {

@@ -1158,3 +1158,63 @@ func (db *DB) DeleteOAuthCredentials(ctx context.Context, provider string) error
 		return q.DeleteOAuthCredentials(ctx, provider)
 	})
 }
+
+// GetConversationRuntime retrieves persisted runtime state for a conversation.
+func (db *DB) GetConversationRuntime(ctx context.Context, conversationID string) (*generated.ConversationRuntime, error) {
+	var runtime generated.ConversationRuntime
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		q := generated.New(rx.Conn())
+		var err error
+		runtime, err = q.GetConversationRuntime(ctx, conversationID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &runtime, nil
+}
+
+// GetJobRun retrieves a persisted job run by ID.
+func (db *DB) GetJobRun(ctx context.Context, jobID string) (*generated.JobRun, error) {
+	var job generated.JobRun
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		q := generated.New(rx.Conn())
+		var err error
+		job, err = q.GetJobRun(ctx, jobID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+// ListJobRunsForConversation retrieves recent jobs for a conversation.
+func (db *DB) ListJobRunsForConversation(ctx context.Context, conversationID string, limit int64) ([]generated.JobRun, error) {
+	var jobs []generated.JobRun
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		q := generated.New(rx.Conn())
+		var err error
+		jobs, err = q.ListJobRunsForConversation(ctx, generated.ListJobRunsForConversationParams{
+			ConversationID: conversationID,
+			Limit:          limit,
+		})
+		return err
+	})
+	return jobs, err
+}
+
+// ListConversationEventsSince retrieves append-only events for a conversation after the given event ID.
+func (db *DB) ListConversationEventsSince(ctx context.Context, conversationID string, afterEventID int64) ([]generated.ConversationEvent, error) {
+	var events []generated.ConversationEvent
+	err := db.pool.Rx(ctx, func(ctx context.Context, rx *Rx) error {
+		q := generated.New(rx.Conn())
+		var err error
+		events, err = q.ListConversationEventsSince(ctx, generated.ListConversationEventsSinceParams{
+			ConversationID: conversationID,
+			EventID:        afterEventID,
+		})
+		return err
+	})
+	return events, err
+}
