@@ -23,10 +23,11 @@ const (
 // Service provides Gemini completions.
 // Fields should not be altered concurrently with calling any method on Service.
 type Service struct {
-	HTTPC  *http.Client // defaults to http.DefaultClient if nil
-	URL    string       // Gemini API URL, uses the gemini package default if empty
-	APIKey string       // must be non-empty
-	Model  string       // defaults to DefaultModel if empty
+	HTTPC               *http.Client // defaults to http.DefaultClient if nil
+	URL                 string       // Gemini API URL, uses the gemini package default if empty
+	APIKey              string       // must be non-empty
+	Model               string       // defaults to DefaultModel if empty
+	ContextWindowTokens int
 }
 
 var _ llm.Service = (*Service)(nil)
@@ -446,6 +447,10 @@ func calculateUsage(req *gemini.Request, res *gemini.Response) llm.Usage {
 
 // TokenContextWindow returns the maximum token context window size for this service
 func (s *Service) TokenContextWindow() int {
+	if s.ContextWindowTokens > 0 {
+		return s.ContextWindowTokens
+	}
+
 	model := s.Model
 	if model == "" {
 		model = DefaultModel

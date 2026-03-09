@@ -386,24 +386,10 @@ func (s *ResponsesService) toLLMUsageFromResponses(usage responsesUsage, headers
 // TokenContextWindow returns the maximum token context window size for this service
 func (s *ResponsesService) TokenContextWindow() int {
 	model := cmp.Or(s.Model, DefaultModel)
-
-	// Use the same context window logic as the regular service
-	switch model.ModelName {
-	case "gpt-5.4":
-		return 1000000 // 1M for gpt-5.4
-	case "gpt-5.3-codex":
-		return 288000 // 288k for gpt-5.3-codex
-	case "gpt-5.2-codex":
-		return 272000 // 272k for gpt-5.2-codex
-	case "gpt-5.1-codex":
-		return 256000 // 256k for gpt-5.1-codex
-	case "gpt-4.1-2025-04-14", "gpt-4.1-mini-2025-04-14", "gpt-4.1-nano-2025-04-14":
-		return 200000
-	case "gpt-4o-2024-08-06", "gpt-4o-mini-2024-07-18":
-		return 128000
-	default:
-		return 128000
+	if model.ContextWindowTokens > 0 {
+		return model.ContextWindowTokens
 	}
+	return 128000
 }
 
 // MaxImageDimension returns the maximum allowed image dimension.

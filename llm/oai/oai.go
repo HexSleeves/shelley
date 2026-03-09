@@ -39,79 +39,89 @@ const (
 )
 
 type Model struct {
-	UserName           string // provided by the user to identify this model (e.g. "gpt4.1")
-	ModelName          string // provided to the service provide to specify which model to use (e.g. "gpt-4.1-2025-04-14")
-	URL                string
-	APIKeyEnv          string // environment variable name for the API key
-	IsReasoningModel   bool   // whether this model is a reasoning model (e.g. O3, O4-mini)
-	UseSimplifiedPatch bool   // whether to use the simplified patch input schema; defaults to false
+	UserName            string // provided by the user to identify this model (e.g. "gpt4.1")
+	ModelName           string // provided to the service provide to specify which model to use (e.g. "gpt-4.1-2025-04-14")
+	URL                 string
+	APIKeyEnv           string // environment variable name for the API key
+	ContextWindowTokens int
+	IsReasoningModel    bool // whether this model is a reasoning model (e.g. O3, O4-mini)
+	UseSimplifiedPatch  bool // whether to use the simplified patch input schema; defaults to false
 }
 
 var (
 	DefaultModel = GPT41
 
 	GPT41 = Model{
-		UserName:  "gpt4.1",
-		ModelName: "gpt-4.1-2025-04-14",
-		URL:       OpenAIURL,
-		APIKeyEnv: OpenAIAPIKeyEnv,
+		UserName:            "gpt4.1",
+		ModelName:           "gpt-4.1-2025-04-14",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 200000,
 	}
 
 	GPT4o = Model{
-		UserName:  "gpt4o",
-		ModelName: "gpt-4o-2024-08-06",
-		URL:       OpenAIURL,
-		APIKeyEnv: OpenAIAPIKeyEnv,
+		UserName:            "gpt4o",
+		ModelName:           "gpt-4o-2024-08-06",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	GPT4oMini = Model{
-		UserName:  "gpt4o-mini",
-		ModelName: "gpt-4o-mini-2024-07-18",
-		URL:       OpenAIURL,
-		APIKeyEnv: OpenAIAPIKeyEnv,
+		UserName:            "gpt4o-mini",
+		ModelName:           "gpt-4o-mini-2024-07-18",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	GPT41Mini = Model{
-		UserName:  "gpt4.1-mini",
-		ModelName: "gpt-4.1-mini-2025-04-14",
-		URL:       OpenAIURL,
-		APIKeyEnv: OpenAIAPIKeyEnv,
+		UserName:            "gpt4.1-mini",
+		ModelName:           "gpt-4.1-mini-2025-04-14",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 200000,
 	}
 
 	GPT41Nano = Model{
-		UserName:  "gpt4.1-nano",
-		ModelName: "gpt-4.1-nano-2025-04-14",
-		URL:       OpenAIURL,
-		APIKeyEnv: OpenAIAPIKeyEnv,
+		UserName:            "gpt4.1-nano",
+		ModelName:           "gpt-4.1-nano-2025-04-14",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 200000,
 	}
 
 	O3 = Model{
-		UserName:         "o3",
-		ModelName:        "o3-2025-04-16",
-		URL:              OpenAIURL,
-		APIKeyEnv:        OpenAIAPIKeyEnv,
-		IsReasoningModel: true,
+		UserName:            "o3",
+		ModelName:           "o3-2025-04-16",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 200000,
+		IsReasoningModel:    true,
 	}
 
 	O4Mini = Model{
-		UserName:         "o4-mini",
-		ModelName:        "o4-mini-2025-04-16",
-		URL:              OpenAIURL,
-		APIKeyEnv:        OpenAIAPIKeyEnv,
-		IsReasoningModel: true,
+		UserName:            "o4-mini",
+		ModelName:           "o4-mini-2025-04-16",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 128000,
+		IsReasoningModel:    true,
 	}
 
 	Gemini25Flash = Model{
-		UserName:  "gemini-flash-2.5",
-		ModelName: "gemini-2.5-flash-preview-04-17",
-		URL:       GeminiURL,
-		APIKeyEnv: GeminiAPIKeyEnv,
+		UserName:            "gemini-flash-2.5",
+		ModelName:           "gemini-2.5-flash-preview-04-17",
+		URL:                 GeminiURL,
+		APIKeyEnv:           GeminiAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	Gemini25Pro = Model{
-		UserName:  "gemini-pro-2.5",
-		ModelName: "gemini-2.5-pro-preview-03-25",
-		URL:       GeminiURL,
+		UserName:            "gemini-pro-2.5",
+		ModelName:           "gemini-2.5-pro-preview-03-25",
+		URL:                 GeminiURL,
+		ContextWindowTokens: 128000,
 		// GRRRR. Really??
 		// Input is: $1.25, prompts <= 200k tokens, $2.50, prompts > 200k tokens
 		// Output is: $10.00, prompts <= 200k tokens, $15.00, prompts > 200k
@@ -123,190 +133,217 @@ var (
 	}
 
 	TogetherDeepseekV3 = Model{
-		UserName:  "together-deepseek-v3",
-		ModelName: "deepseek-ai/DeepSeek-V3",
-		URL:       TogetherURL,
-		APIKeyEnv: TogetherAPIKeyEnv,
+		UserName:            "together-deepseek-v3",
+		ModelName:           "deepseek-ai/DeepSeek-V3",
+		URL:                 TogetherURL,
+		APIKeyEnv:           TogetherAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	TogetherDeepseekR1 = Model{
-		UserName:  "together-deepseek-r1",
-		ModelName: "deepseek-ai/DeepSeek-R1",
-		URL:       TogetherURL,
-		APIKeyEnv: TogetherAPIKeyEnv,
+		UserName:            "together-deepseek-r1",
+		ModelName:           "deepseek-ai/DeepSeek-R1",
+		URL:                 TogetherURL,
+		APIKeyEnv:           TogetherAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	TogetherLlama4Maverick = Model{
-		UserName:  "together-llama4-maverick",
-		ModelName: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
-		URL:       TogetherURL,
-		APIKeyEnv: TogetherAPIKeyEnv,
+		UserName:            "together-llama4-maverick",
+		ModelName:           "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+		URL:                 TogetherURL,
+		APIKeyEnv:           TogetherAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	FireworksLlama4Maverick = Model{
-		UserName:  "fireworks-llama4-maverick",
-		ModelName: "accounts/fireworks/models/llama4-maverick-instruct-basic",
-		URL:       FireworksURL,
-		APIKeyEnv: FireworksAPIKeyEnv,
+		UserName:            "fireworks-llama4-maverick",
+		ModelName:           "accounts/fireworks/models/llama4-maverick-instruct-basic",
+		URL:                 FireworksURL,
+		APIKeyEnv:           FireworksAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	TogetherLlama3_3_70B = Model{
-		UserName:  "together-llama3-70b",
-		ModelName: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-		URL:       TogetherURL,
-		APIKeyEnv: TogetherAPIKeyEnv,
+		UserName:            "together-llama3-70b",
+		ModelName:           "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+		URL:                 TogetherURL,
+		APIKeyEnv:           TogetherAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	TogetherMistralSmall = Model{
-		UserName:  "together-mistral-small",
-		ModelName: "mistralai/Mistral-Small-24B-Instruct-2501",
-		URL:       TogetherURL,
-		APIKeyEnv: TogetherAPIKeyEnv,
+		UserName:            "together-mistral-small",
+		ModelName:           "mistralai/Mistral-Small-24B-Instruct-2501",
+		URL:                 TogetherURL,
+		APIKeyEnv:           TogetherAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	TogetherQwen3 = Model{
-		UserName:  "together-qwen3",
-		ModelName: "Qwen/Qwen3-235B-A22B-fp8-tput",
-		URL:       TogetherURL,
-		APIKeyEnv: TogetherAPIKeyEnv,
+		UserName:            "together-qwen3",
+		ModelName:           "Qwen/Qwen3-235B-A22B-fp8-tput",
+		URL:                 TogetherURL,
+		APIKeyEnv:           TogetherAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	TogetherGemma2 = Model{
-		UserName:  "together-gemma2",
-		ModelName: "google/gemma-2-27b-it",
-		URL:       TogetherURL,
-		APIKeyEnv: TogetherAPIKeyEnv,
+		UserName:            "together-gemma2",
+		ModelName:           "google/gemma-2-27b-it",
+		URL:                 TogetherURL,
+		APIKeyEnv:           TogetherAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	LlamaCPP = Model{
-		UserName:  "llama.cpp",
-		ModelName: "llama.cpp local model",
-		URL:       LlamaCPPURL,
-		APIKeyEnv: "NONE",
+		UserName:            "llama.cpp",
+		ModelName:           "llama.cpp local model",
+		URL:                 LlamaCPPURL,
+		APIKeyEnv:           "NONE",
+		ContextWindowTokens: 128000,
 	}
 
 	FireworksDeepseekV3 = Model{
-		UserName:  "fireworks-deepseek-v3",
-		ModelName: "accounts/fireworks/models/deepseek-v3-0324",
-		URL:       FireworksURL,
-		APIKeyEnv: FireworksAPIKeyEnv,
+		UserName:            "fireworks-deepseek-v3",
+		ModelName:           "accounts/fireworks/models/deepseek-v3-0324",
+		URL:                 FireworksURL,
+		APIKeyEnv:           FireworksAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	MoonshotKimiK2 = Model{
-		UserName:  "moonshot-kimi-k2",
-		ModelName: "moonshot-v1-auto",
-		URL:       MoonshotURL,
-		APIKeyEnv: MoonshotAPIKeyEnv,
+		UserName:            "moonshot-kimi-k2",
+		ModelName:           "moonshot-v1-auto",
+		URL:                 MoonshotURL,
+		APIKeyEnv:           MoonshotAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	MistralMedium = Model{
-		UserName:  "mistral-medium-3",
-		ModelName: "mistral-medium-latest",
-		URL:       MistralURL,
-		APIKeyEnv: MistralAPIKeyEnv,
+		UserName:            "mistral-medium-3",
+		ModelName:           "mistral-medium-latest",
+		URL:                 MistralURL,
+		APIKeyEnv:           MistralAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	DevstralSmall = Model{
-		UserName:  "devstral-small",
-		ModelName: "devstral-small-latest",
-		URL:       MistralURL,
-		APIKeyEnv: MistralAPIKeyEnv,
+		UserName:            "devstral-small",
+		ModelName:           "devstral-small-latest",
+		URL:                 MistralURL,
+		APIKeyEnv:           MistralAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	ZaiGLM45CoderFireworks = Model{
-		UserName:  "zai-glm45-fireworks",
-		ModelName: "accounts/fireworks/models/glm-4p5",
-		URL:       FireworksURL,
-		APIKeyEnv: FireworksAPIKeyEnv,
+		UserName:            "zai-glm45-fireworks",
+		ModelName:           "accounts/fireworks/models/glm-4p5",
+		URL:                 FireworksURL,
+		APIKeyEnv:           FireworksAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	GLM4P6Fireworks = Model{
-		UserName:  "glm-4p6-fireworks",
-		ModelName: "accounts/fireworks/models/glm-4p6",
-		URL:       FireworksURL,
-		APIKeyEnv: FireworksAPIKeyEnv,
+		UserName:            "glm-4p6-fireworks",
+		ModelName:           "accounts/fireworks/models/glm-4p6",
+		URL:                 FireworksURL,
+		APIKeyEnv:           FireworksAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	GLM47Fireworks = Model{
-		UserName:  "glm-4.7-fireworks",
-		ModelName: "accounts/fireworks/models/glm-4p7",
-		URL:       FireworksURL,
-		APIKeyEnv: FireworksAPIKeyEnv,
+		UserName:            "glm-4.7-fireworks",
+		ModelName:           "accounts/fireworks/models/glm-4p7",
+		URL:                 FireworksURL,
+		APIKeyEnv:           FireworksAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	GPTOSS20B = Model{
-		UserName:  "gpt-oss-20b",
-		ModelName: "accounts/fireworks/models/gpt-oss-20b",
-		URL:       FireworksURL,
-		APIKeyEnv: FireworksAPIKeyEnv,
+		UserName:            "gpt-oss-20b",
+		ModelName:           "accounts/fireworks/models/gpt-oss-20b",
+		URL:                 FireworksURL,
+		APIKeyEnv:           FireworksAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	GPTOSS120B = Model{
-		UserName:  "gpt-oss-120b",
-		ModelName: "accounts/fireworks/models/gpt-oss-120b",
-		URL:       FireworksURL,
-		APIKeyEnv: FireworksAPIKeyEnv,
+		UserName:            "gpt-oss-120b",
+		ModelName:           "accounts/fireworks/models/gpt-oss-120b",
+		URL:                 FireworksURL,
+		APIKeyEnv:           FireworksAPIKeyEnv,
+		ContextWindowTokens: 128000,
 	}
 
 	GPT5 = Model{
-		UserName:  "gpt-5-thinking",
-		ModelName: "gpt-5.1",
-		URL:       OpenAIURL,
-		APIKeyEnv: OpenAIAPIKeyEnv,
+		UserName:            "gpt-5-thinking",
+		ModelName:           "gpt-5.1",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 256000,
 	}
 
 	GPT5Mini = Model{
-		UserName:  "gpt-5-thinking-mini",
-		ModelName: "gpt-5.1-mini",
-		URL:       OpenAIURL,
-		APIKeyEnv: OpenAIAPIKeyEnv,
+		UserName:            "gpt-5-thinking-mini",
+		ModelName:           "gpt-5.1-mini",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 256000,
 	}
 
 	GPT5Nano = Model{
-		UserName:  "gpt-5-thinking-nano",
-		ModelName: "gpt-5.1-nano",
-		URL:       OpenAIURL,
-		APIKeyEnv: OpenAIAPIKeyEnv,
+		UserName:            "gpt-5-thinking-nano",
+		ModelName:           "gpt-5.1-nano",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 256000,
 	}
 
 	GPT5Codex = Model{
-		UserName:  "gpt-5.1-codex",
-		ModelName: "gpt-5.1-codex",
-		URL:       OpenAIURL,
-		APIKeyEnv: OpenAIAPIKeyEnv,
+		UserName:            "gpt-5.1-codex",
+		ModelName:           "gpt-5.1-codex",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 256000,
 	}
 
 	GPT52Codex = Model{
-		UserName:  "gpt-5.2-codex",
-		ModelName: "gpt-5.2-codex",
-		URL:       OpenAIURL,
-		APIKeyEnv: OpenAIAPIKeyEnv,
+		UserName:            "gpt-5.2-codex",
+		ModelName:           "gpt-5.2-codex",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 272000,
 	}
 
 	GPT54 = Model{
-		UserName:  "gpt-5.4",
-		ModelName: "gpt-5.4",
-		URL:       OpenAIURL,
-		APIKeyEnv: OpenAIAPIKeyEnv,
+		UserName:            "gpt-5.4",
+		ModelName:           "gpt-5.4",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 1000000,
 	}
 
 	GPT53Codex = Model{
-		UserName:  "gpt-5.3-codex",
-		ModelName: "gpt-5.3-codex",
-		URL:       OpenAIURL,
-		APIKeyEnv: OpenAIAPIKeyEnv,
+		UserName:            "gpt-5.3-codex",
+		ModelName:           "gpt-5.3-codex",
+		URL:                 OpenAIURL,
+		APIKeyEnv:           OpenAIAPIKeyEnv,
+		ContextWindowTokens: 288000,
 	}
 
 	// Skaband-specific model names.
 	// Provider details (URL and APIKeyEnv) are handled by skaband
 	Qwen = Model{
-		UserName:           "qwen",
-		ModelName:          "qwen", // skaband will map this to the actual provider model
-		UseSimplifiedPatch: true,
+		UserName:            "qwen",
+		ModelName:           "qwen", // skaband will map this to the actual provider model
+		ContextWindowTokens: 256000,
+		UseSimplifiedPatch:  true,
 	}
 	GLM = Model{
-		UserName:  "glm",
-		ModelName: "glm", // skaband will map this to the actual provider model
+		UserName:            "glm",
+		ModelName:           "glm", // skaband will map this to the actual provider model
+		ContextWindowTokens: 128000,
 	}
 )
 
@@ -729,31 +766,11 @@ func toStopReason(reason string) llm.StopReason {
 
 // TokenContextWindow returns the maximum token context window size for this service
 func (s *Service) TokenContextWindow() int {
-	// TODO: move TokenContextWindow information to Model struct
-
 	model := cmp.Or(s.Model, DefaultModel)
-
-	// OpenAI models generally have 128k context windows
-	// Some newer models have larger windows, but 128k is a safe default
-	switch model.ModelName {
-	case "gpt-4.1-2025-04-14", "gpt-4.1-mini-2025-04-14", "gpt-4.1-nano-2025-04-14":
-		return 200000 // 200k for newer GPT-4.1 models
-	case "gpt-4o-2024-08-06", "gpt-4o-mini-2024-07-18":
-		return 128000 // 128k for GPT-4o models
-	case "o3-2025-04-16", "o3-mini-2025-04-16":
-		return 200000 // 200k for O3 models
-	case "glm", "zai-glm45-fireworks":
-		return 128000
-	case "qwen":
-		return 256000
-	case "gpt-oss-20b", "gpt-oss-120b":
-		return 128000
-	case "gpt-5.1", "gpt-5.1-mini", "gpt-5.1-nano":
-		return 256000
-	default:
-		// Default for unknown models
-		return 128000
+	if model.ContextWindowTokens > 0 {
+		return model.ContextWindowTokens
 	}
+	return 128000
 }
 
 // MaxImageDimension returns the maximum allowed image dimension.

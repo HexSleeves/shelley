@@ -76,7 +76,7 @@ func ClaudeModelName(userName string) string {
 
 // TokenContextWindow returns the maximum token context window size for this service
 func (s *Service) TokenContextWindow() int {
-	return 200000
+	return cmp.Or(s.ContextWindowTokens, 200000)
 }
 
 // maxOutputTokens returns the maximum allowed output tokens for the configured model.
@@ -106,13 +106,14 @@ func (s *Service) MaxImageDimension() int {
 // Service provides Claude completions.
 // Fields should not be altered concurrently with calling any method on Service.
 type Service struct {
-	HTTPC         *http.Client      // defaults to http.DefaultClient if nil
-	URL           string            // defaults to DefaultURL if empty
-	APIKey        string            // must be non-empty
-	Model         string            // defaults to DefaultModel if empty
-	MaxTokens     int               // 0 means use model-specific limit from modelMaxOutputTokens
-	ThinkingLevel llm.ThinkingLevel // thinking level (ThinkingLevelOff disables, default is ThinkingLevelMedium)
-	Backoff       []time.Duration   // retry backoff durations; defaults to {15s, 30s, 60s} if nil
+	HTTPC               *http.Client      // defaults to http.DefaultClient if nil
+	URL                 string            // defaults to DefaultURL if empty
+	APIKey              string            // must be non-empty
+	Model               string            // defaults to DefaultModel if empty
+	MaxTokens           int               // 0 means use model-specific limit from modelMaxOutputTokens
+	ThinkingLevel       llm.ThinkingLevel // thinking level (ThinkingLevelOff disables, default is ThinkingLevelMedium)
+	Backoff             []time.Duration   // retry backoff durations; defaults to {15s, 30s, 60s} if nil
+	ContextWindowTokens int
 }
 
 var _ llm.Service = (*Service)(nil)

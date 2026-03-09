@@ -30,6 +30,59 @@ func TestAll(t *testing.T) {
 	}
 }
 
+func TestRegistryHasUniqueIDs(t *testing.T) {
+	specs := Registry()
+	if len(specs) == 0 {
+		t.Fatal("expected registry specs")
+	}
+
+	seen := make(map[string]bool)
+	for _, spec := range specs {
+		if spec.ID == "" {
+			t.Fatal("registry spec missing ID")
+		}
+		if seen[spec.ID] {
+			t.Fatalf("duplicate registry spec ID %q", spec.ID)
+		}
+		seen[spec.ID] = true
+	}
+}
+
+func TestRegistryContextWindowsFlowIntoServices(t *testing.T) {
+	cfg := &Config{
+		AnthropicAPIKey: "test-key",
+		OpenAIAPIKey:    "test-key",
+		GeminiAPIKey:    "test-key",
+		FireworksAPIKey: "test-key",
+	}
+
+	manager, err := NewManager(cfg)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+
+	tests := []struct {
+		modelID string
+		want    int
+	}{
+		{modelID: "claude-opus-4.6", want: 200000},
+		{modelID: "gpt-5.4", want: 1000000},
+		{modelID: "gemini-3-pro", want: 1000000},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.modelID, func(t *testing.T) {
+			svc, err := manager.GetService(tt.modelID)
+			if err != nil {
+				t.Fatalf("GetService(%q) failed: %v", tt.modelID, err)
+			}
+			if got := svc.TokenContextWindow(); got != tt.want {
+				t.Fatalf("TokenContextWindow() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestByID(t *testing.T) {
 	tests := []struct {
 		id      string

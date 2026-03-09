@@ -13,12 +13,8 @@ import (
 	"shelley.exe.dev/db"
 	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
-	"shelley.exe.dev/llm/ant"
 	"shelley.exe.dev/llm/codex"
-	"shelley.exe.dev/llm/gem"
 	"shelley.exe.dev/llm/llmhttp"
-	"shelley.exe.dev/llm/oai"
-	"shelley.exe.dev/loop"
 )
 
 // Provider represents an LLM provider
@@ -159,239 +155,7 @@ func (c *Config) getFireworksURL() string {
 
 // All returns all available models in Shelley
 func All() []Model {
-	return []Model{
-		{
-			ID:              "claude-opus-4.6",
-			Provider:        ProviderAnthropic,
-			Description:     "Claude Opus 4.6 (default)",
-			RequiredEnvVars: []string{"ANTHROPIC_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.AnthropicAPIKey == "" {
-					return nil, fmt.Errorf("claude-opus-4.6 requires ANTHROPIC_API_KEY")
-				}
-				svc := &ant.Service{APIKey: config.AnthropicAPIKey, Model: ant.Claude46Opus, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium}
-				if url := config.getAnthropicURL(); url != "" {
-					svc.URL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "claude-opus-4.5",
-			Provider:        ProviderAnthropic,
-			Description:     "Claude Opus 4.5",
-			RequiredEnvVars: []string{"ANTHROPIC_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.AnthropicAPIKey == "" {
-					return nil, fmt.Errorf("claude-opus-4.5 requires ANTHROPIC_API_KEY")
-				}
-				svc := &ant.Service{APIKey: config.AnthropicAPIKey, Model: ant.Claude45Opus, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium}
-				if url := config.getAnthropicURL(); url != "" {
-					svc.URL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "claude-sonnet-4.6",
-			Provider:        ProviderAnthropic,
-			Description:     "Claude Sonnet 4.6",
-			RequiredEnvVars: []string{"ANTHROPIC_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.AnthropicAPIKey == "" {
-					return nil, fmt.Errorf("claude-sonnet-4.6 requires ANTHROPIC_API_KEY")
-				}
-				svc := &ant.Service{APIKey: config.AnthropicAPIKey, Model: ant.Claude46Sonnet, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium}
-				if url := config.getAnthropicURL(); url != "" {
-					svc.URL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "claude-sonnet-4.5",
-			Provider:        ProviderAnthropic,
-			Description:     "Claude Sonnet 4.5",
-			RequiredEnvVars: []string{"ANTHROPIC_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.AnthropicAPIKey == "" {
-					return nil, fmt.Errorf("claude-sonnet-4.5 requires ANTHROPIC_API_KEY")
-				}
-				svc := &ant.Service{APIKey: config.AnthropicAPIKey, Model: ant.Claude45Sonnet, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium}
-				if url := config.getAnthropicURL(); url != "" {
-					svc.URL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "claude-haiku-4.5",
-			Provider:        ProviderAnthropic,
-			Description:     "Claude Haiku 4.5",
-			Tags:            "slug-backup",
-			RequiredEnvVars: []string{"ANTHROPIC_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.AnthropicAPIKey == "" {
-					return nil, fmt.Errorf("claude-haiku-4.5 requires ANTHROPIC_API_KEY")
-				}
-				svc := &ant.Service{APIKey: config.AnthropicAPIKey, Model: ant.Claude45Haiku, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium}
-				if url := config.getAnthropicURL(); url != "" {
-					svc.URL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "glm-4.7-fireworks",
-			Provider:        ProviderFireworks,
-			Description:     "GLM-4.7 on Fireworks",
-			RequiredEnvVars: []string{"FIREWORKS_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.FireworksAPIKey == "" {
-					return nil, fmt.Errorf("glm-4.7-fireworks requires FIREWORKS_API_KEY")
-				}
-				svc := &oai.Service{Model: oai.GLM47Fireworks, APIKey: config.FireworksAPIKey, HTTPC: httpc}
-				if url := config.getFireworksURL(); url != "" {
-					svc.ModelURL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "gpt-5.4",
-			Provider:        ProviderOpenAI,
-			Description:     "GPT-5.4",
-			RequiredEnvVars: []string{"OPENAI_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.OpenAIAPIKey == "" {
-					return nil, fmt.Errorf("gpt-5.4 requires OPENAI_API_KEY")
-				}
-				svc := &oai.ResponsesService{Model: oai.GPT54, APIKey: config.OpenAIAPIKey, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium}
-				if url := config.getOpenAIURL(); url != "" {
-					svc.ModelURL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "gpt-5.3-codex",
-			Provider:        ProviderOpenAI,
-			Description:     "GPT-5.3 Codex",
-			RequiredEnvVars: []string{"OPENAI_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.OpenAIAPIKey == "" {
-					return nil, fmt.Errorf("gpt-5.3-codex requires OPENAI_API_KEY")
-				}
-				svc := &oai.ResponsesService{Model: oai.GPT53Codex, APIKey: config.OpenAIAPIKey, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium}
-				if url := config.getOpenAIURL(); url != "" {
-					svc.ModelURL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "gpt-5.2-codex",
-			Provider:        ProviderOpenAI,
-			Description:     "GPT-5.2 Codex",
-			RequiredEnvVars: []string{"OPENAI_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.OpenAIAPIKey == "" {
-					return nil, fmt.Errorf("gpt-5.2-codex requires OPENAI_API_KEY")
-				}
-				svc := &oai.ResponsesService{Model: oai.GPT52Codex, APIKey: config.OpenAIAPIKey, HTTPC: httpc, ThinkingLevel: llm.ThinkingLevelMedium}
-				if url := config.getOpenAIURL(); url != "" {
-					svc.ModelURL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "gpt-oss-20b-fireworks",
-			Provider:        ProviderFireworks,
-			Description:     "GPT-OSS 20B on Fireworks",
-			Tags:            "slug",
-			RequiredEnvVars: []string{"FIREWORKS_API_KEY"},
-			GatewayEnabled:  true,
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.FireworksAPIKey == "" {
-					return nil, fmt.Errorf("gpt-oss-20b-fireworks requires FIREWORKS_API_KEY")
-				}
-				svc := &oai.Service{Model: oai.GPTOSS20B, APIKey: config.FireworksAPIKey, HTTPC: httpc}
-				if url := config.getFireworksURL(); url != "" {
-					svc.ModelURL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "glm-4p6-fireworks",
-			Provider:        ProviderFireworks,
-			Description:     "GLM-4P6 on Fireworks",
-			RequiredEnvVars: []string{"FIREWORKS_API_KEY"},
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.FireworksAPIKey == "" {
-					return nil, fmt.Errorf("glm-4p6-fireworks requires FIREWORKS_API_KEY")
-				}
-				svc := &oai.Service{Model: oai.GLM4P6Fireworks, APIKey: config.FireworksAPIKey, HTTPC: httpc}
-				if url := config.getFireworksURL(); url != "" {
-					svc.ModelURL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "gemini-3-pro",
-			Provider:        ProviderGemini,
-			Description:     "Gemini 3 Pro",
-			RequiredEnvVars: []string{"GEMINI_API_KEY"},
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.GeminiAPIKey == "" {
-					return nil, fmt.Errorf("gemini-3-pro requires GEMINI_API_KEY")
-				}
-				svc := &gem.Service{APIKey: config.GeminiAPIKey, Model: "gemini-3-pro-preview", HTTPC: httpc}
-				if url := config.getGeminiURL(); url != "" {
-					svc.URL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:              "gemini-3-flash",
-			Provider:        ProviderGemini,
-			Description:     "Gemini 3 Flash",
-			RequiredEnvVars: []string{"GEMINI_API_KEY"},
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				if config.GeminiAPIKey == "" {
-					return nil, fmt.Errorf("gemini-3-flash requires GEMINI_API_KEY")
-				}
-				svc := &gem.Service{APIKey: config.GeminiAPIKey, Model: "gemini-3-flash-preview", HTTPC: httpc}
-				if url := config.getGeminiURL(); url != "" {
-					svc.URL = url
-				}
-				return svc, nil
-			},
-		},
-		{
-			ID:          "predictable",
-			Provider:    ProviderBuiltIn,
-			Description: "Deterministic test model (no API key)",
-			// Used for testing; should be harmless.
-			GatewayEnabled:  true,
-			RequiredEnvVars: []string{},
-			Factory: func(config *Config, httpc *http.Client) (llm.Service, error) {
-				return loop.NewPredictableService(), nil
-			},
-		},
-	}
+	return builtInModels()
 }
 
 // ByID returns the model with the given ID, or nil if not found
@@ -809,45 +573,18 @@ func (m *Manager) GetModelInfo(modelID string) *ModelInfo {
 
 // createServiceFromModel creates an LLM service from a database model configuration
 func (m *Manager) createServiceFromModel(model *generated.Model) llm.Service {
+	if spec, ok := customModelSpec(model); ok {
+		svc, err := newCustomService(spec, model.ApiKey, m.httpc)
+		if err != nil {
+			if m.logger != nil {
+				m.logger.Error("Failed to create custom model service", "model_id", model.ModelID, "error", err)
+			}
+			return nil
+		}
+		return svc
+	}
+
 	switch model.ProviderType {
-	case "anthropic":
-		return &ant.Service{
-			APIKey:        model.ApiKey,
-			URL:           model.Endpoint,
-			Model:         model.ModelName,
-			HTTPC:         m.httpc,
-			ThinkingLevel: llm.ThinkingLevelMedium,
-		}
-	case "openai":
-		return &oai.Service{
-			APIKey:   model.ApiKey,
-			ModelURL: model.Endpoint,
-			Model: oai.Model{
-				ModelName: model.ModelName,
-				URL:       model.Endpoint,
-			},
-			MaxTokens: int(model.MaxTokens),
-			HTTPC:     m.httpc,
-		}
-	case "openai-responses":
-		return &oai.ResponsesService{
-			APIKey:   model.ApiKey,
-			ModelURL: model.Endpoint,
-			Model: oai.Model{
-				ModelName: model.ModelName,
-				URL:       model.Endpoint,
-			},
-			MaxTokens:     int(model.MaxTokens),
-			HTTPC:         m.httpc,
-			ThinkingLevel: llm.ThinkingLevelMedium,
-		}
-	case "gemini":
-		return &gem.Service{
-			APIKey: model.ApiKey,
-			URL:    model.Endpoint,
-			Model:  model.ModelName,
-			HTTPC:  m.httpc,
-		}
 	case "codex":
 		return m.createCodexService(model)
 	default:
