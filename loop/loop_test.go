@@ -204,6 +204,29 @@ func TestPredictableServiceDefaultResponse(t *testing.T) {
 	}
 }
 
+func TestPredictableServiceSubagentDefaultResponse(t *testing.T) {
+	service := NewPredictableService()
+
+	ctx := context.Background()
+	req := &llm.Request{
+		System: []llm.SystemContent{
+			{Type: "text", Text: "You are a subagent of Shelley, a coding agent."},
+		},
+		Messages: []llm.Message{
+			{Role: llm.MessageRoleUser, Content: []llm.Content{{Type: llm.ContentTypeText, Text: "inspect server/handlers.go"}}},
+		},
+	}
+
+	resp, err := service.Do(ctx, req)
+	if err != nil {
+		t.Fatalf("subagent default response test failed: %v", err)
+	}
+
+	if resp.Content[0].Text != "Subagent completed the task: inspect server/handlers.go" {
+		t.Errorf("unexpected subagent default response: %s", resp.Content[0].Text)
+	}
+}
+
 func TestPredictableServiceDelay(t *testing.T) {
 	service := NewPredictableService()
 

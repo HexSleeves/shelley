@@ -115,6 +115,7 @@ func (s *PredictableService) Do(ctx context.Context, req *llm.Request) (*llm.Res
 
 	// Calculate input token count based on the request content
 	inputTokens := s.countRequestTokens(req)
+	isSubagent := predictableRequestIsSubagent(req)
 
 	// Extract the text content from the last user message
 	var inputText string
@@ -246,8 +247,27 @@ func (s *PredictableService) Do(ctx context.Context, req *llm.Request) (*llm.Res
 		}
 
 		// Default response for undefined inputs
+		if isSubagent {
+			return s.makeSubagentFallbackResponse(inputText, inputTokens), nil
+		}
 		return s.makeResponse("edit predictable.go to add a response for that one...", inputTokens), nil
 	}
+}
+
+func predictableRequestIsSubagent(req *llm.Request) bool {
+	for _, content := range req.System {
+		if strings.Contains(content.Text, "You are a subagent of Shelley") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *PredictableService) makeSubagentFallbackResponse(inputText string, inputTokens uint64) *llm.Response {
+	if inputText == "" {
+		return s.makeResponse("Subagent task complete.", inputTokens)
+	}
+	return s.makeResponse(fmt.Sprintf("Subagent completed the task: %s", inputText), inputTokens)
 }
 
 // makeMaxTokensResponse creates a response that simulates hitting max_tokens limit
