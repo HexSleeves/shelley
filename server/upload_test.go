@@ -177,6 +177,38 @@ func TestUploadedFileCanBeReadViaReadEndpoint(t *testing.T) {
 	os.Remove(path)
 }
 
+func TestReadEndpointRejectsSymlinkEscape(t *testing.T) {
+	server, _, _ := newTestServer(t)
+
+	if err := os.MkdirAll(browse.ScreenshotDir, 0o755); err != nil {
+		t.Fatalf("failed to create screenshot dir: %v", err)
+	}
+
+	outsideDir := t.TempDir()
+	outsideFile := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("top-secret"), 0o644); err != nil {
+		t.Fatalf("failed to write outside file: %v", err)
+	}
+
+	linkPath := filepath.Join(browse.ScreenshotDir, "escape-link.txt")
+	if err := os.RemoveAll(linkPath); err != nil {
+		t.Fatalf("failed to clear link path: %v", err)
+	}
+	if err := os.Symlink(outsideFile, linkPath); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+	defer os.Remove(linkPath)
+
+	readReq := httptest.NewRequest("GET", "/api/read?path="+linkPath, nil)
+	readW := httptest.NewRecorder()
+
+	server.handleRead(readW, readReq)
+
+	if readW.Code != http.StatusForbidden {
+		t.Fatalf("expected status 403, got %d: %s", readW.Code, readW.Body.String())
+	}
+}
+
 func TestUploadPreservesFileExtension(t *testing.T) {
 	server, _, _ := newTestServer(t)
 

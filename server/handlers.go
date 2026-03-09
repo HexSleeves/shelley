@@ -40,10 +40,9 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "path required", http.StatusBadRequest)
 		return
 	}
-	// Clean and enforce prefix restriction
-	clean := filepath.Clean(p)
-	if !(strings.HasPrefix(clean, browse.ScreenshotDir+"/") || strings.HasPrefix(clean, browse.ConsoleLogsDir+"/")) {
-		http.Error(w, "path not allowed", http.StatusForbidden)
+	clean, err := resolveReadableAssetPath(p)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
 	f, err := os.Open(clean)
@@ -80,6 +79,35 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 	// Reasonable short-term caching for assets, allow quick refresh during sessions
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	io.Copy(w, f)
+}
+
+func resolveReadableAssetPath(path string) (string, error) {
+	clean := filepath.Clean(path)
+	allowedRoots := []string{browse.ScreenshotDir, browse.ConsoleLogsDir}
+
+	for _, root := range allowedRoots {
+		resolvedRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			continue
+		}
+
+		if clean == root || strings.HasPrefix(clean, root+string(filepath.Separator)) {
+			resolvedPath, err := filepath.EvalSymlinks(clean)
+			if err != nil {
+				return "", fmt.Errorf("path not allowed")
+			}
+			rel, err := filepath.Rel(resolvedRoot, resolvedPath)
+			if err != nil {
+				return "", fmt.Errorf("path not allowed")
+			}
+			if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return "", fmt.Errorf("path not allowed")
+			}
+			return resolvedPath, nil
+		}
+	}
+
+	return "", fmt.Errorf("path not allowed")
 }
 
 // handleWriteFile writes content to a file (for diff viewer edit mode)

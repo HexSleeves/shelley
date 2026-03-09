@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"shelley.exe.dev/db/generated"
 	"shelley.exe.dev/llm"
 	"shelley.exe.dev/llm/ant"
 )
@@ -135,5 +137,120 @@ func TestCustomModelTestEndpoint(t *testing.T) {
 	// Verify that we got a non-empty response
 	if message == "" || message == "Test failed: empty response from model" {
 		t.Error("Got empty response error despite having a valid API key")
+	}
+}
+
+func TestToModelAPIHidesAPIKey(t *testing.T) {
+	apiModel := toModelAPI(generated.Model{
+		ModelID:      "custom-test",
+		DisplayName:  "Test",
+		ProviderType: "anthropic",
+		Endpoint:     "https://example.com",
+		ApiKey:       "secret-value",
+		ModelName:    "claude-test",
+		MaxTokens:    1234,
+		Tags:         "slug",
+	})
+
+	if apiModel.HasAPIKey != true {
+		t.Fatal("expected HasAPIKey to be true")
+	}
+	if apiModel.APIKey != "" {
+		t.Fatal("expected APIKey to remain empty in API model")
+	}
+
+	body, err := json.Marshal(apiModel)
+	if err != nil {
+		t.Fatalf("failed to marshal api model: %v", err)
+	}
+	if strings.Contains(string(body), "secret-value") {
+		t.Fatal("marshaled API model leaked api key")
+	}
+	if strings.Contains(string(body), "\"api_key\"") {
+		t.Fatal("marshaled API model included api_key field")
+	}
+}
+
+func TestCustomModelHandlersDoNotExposeAPIKey(t *testing.T) {
+	h := NewTestHarness(t)
+
+	model, err := h.db.CreateModel(t.Context(), generated.CreateModelParams{
+		ModelID:      "custom-test",
+		DisplayName:  "Test Model",
+		ProviderType: "anthropic",
+		Endpoint:     "https://example.com",
+		ApiKey:       "secret-value",
+		ModelName:    "claude-test",
+		MaxTokens:    200000,
+		Tags:         "slug",
+	})
+	if err != nil {
+		t.Fatalf("failed to create model: %v", err)
+	}
+
+	t.Run("list", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/custom-models", nil)
+		w := httptest.NewRecorder()
+
+		h.server.handleListModels(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+		}
+		assertNoAPIKeyLeak(t, w.Body.Bytes())
+	})
+
+	t.Run("get", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/custom-models/"+model.ModelID, nil)
+		w := httptest.NewRecorder()
+
+		h.server.handleGetModel(w, req, model.ModelID)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+		}
+		assertNoAPIKeyLeak(t, w.Body.Bytes())
+	})
+
+	t.Run("create", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"display_name":"New Model","provider_type":"anthropic","endpoint":"https://example.com","api_key":"new-secret","model_name":"claude-test","max_tokens":200000,"tags":"slug"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/custom-models", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		h.server.handleCreateModel(w, req)
+
+		if w.Code != http.StatusCreated {
+			t.Fatalf("expected status 201, got %d: %s", w.Code, w.Body.String())
+		}
+		assertNoAPIKeyLeak(t, w.Body.Bytes())
+	})
+
+	t.Run("update", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"display_name":"Updated Model","provider_type":"anthropic","endpoint":"https://example.com","model_name":"claude-test","max_tokens":200000,"tags":"slug"}`)
+		req := httptest.NewRequest(http.MethodPut, "/api/custom-models/"+model.ModelID, body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		h.server.handleUpdateModel(w, req, model.ModelID)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+		}
+		assertNoAPIKeyLeak(t, w.Body.Bytes())
+	})
+}
+
+func assertNoAPIKeyLeak(t *testing.T, body []byte) {
+	t.Helper()
+
+	if strings.Contains(string(body), "secret-value") || strings.Contains(string(body), "new-secret") {
+		t.Fatalf("response leaked api key: %s", string(body))
+	}
+	if strings.Contains(string(body), "\"api_key\"") {
+		t.Fatalf("response included api_key field: %s", string(body))
+	}
+	if !strings.Contains(string(body), "\"has_api_key\":true") {
+		t.Fatalf("response missing has_api_key=true: %s", string(body))
 	}
 }
