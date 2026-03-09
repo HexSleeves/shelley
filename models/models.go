@@ -607,50 +607,7 @@ func (m *Manager) createServiceFromModel(model *generated.Model) llm.Service {
 
 // createCodexService creates a Codex service using OAuth credentials from the database
 func (m *Manager) createCodexService(model *generated.Model) llm.Service {
-	if m.db == nil {
-		if m.logger != nil {
-			m.logger.Error("Cannot create codex service without database")
-		}
-		return nil
-	}
-
-	cred, err := m.db.GetOAuthCredentials(context.Background(), "codex")
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			if m.logger != nil {
-				m.logger.Debug("Codex not authenticated, skipping model", "model_id", model.ModelID)
-			}
-			return nil
-		}
-		if m.logger != nil {
-			m.logger.Error("Failed to get codex credentials", "error", err)
-		}
-		return nil
-	}
-
-	thinkingLevel := llm.ThinkingLevelMedium
-	switch {
-	case strings.Contains(model.ModelName, "thinking-low"):
-		thinkingLevel = llm.ThinkingLevelLow
-	case strings.Contains(model.ModelName, "thinking-high"):
-		thinkingLevel = llm.ThinkingLevelHigh
-	case strings.Contains(model.ModelName, "thinking-medium"):
-		thinkingLevel = llm.ThinkingLevelMedium
-	}
-
-	accountID := ""
-	if cred.AccountID != nil {
-		accountID = *cred.AccountID
-	}
-
-	return &codex.Service{
-		AccessToken:   cred.AccessToken,
-		AccountID:     accountID,
-		Model:         model.ModelName,
-		MaxTokens:     int(model.MaxTokens),
-		HTTPC:         m.httpc,
-		ThinkingLevel: thinkingLevel,
-	}
+	return m.newCodexOAuthService("codex", model.ModelName, int(model.MaxTokens), codexThinkingLevel(model.ModelName), "model_id", model.ModelID)
 }
 
 func (m *Manager) createOAuthService(model Model) llm.Service {
@@ -663,13 +620,27 @@ func (m *Manager) createOAuthService(model Model) llm.Service {
 		return nil
 	}
 
-	cred, err := m.db.GetOAuthCredentials(context.Background(), model.OAuthFallback)
+	return m.newCodexOAuthService(model.OAuthFallback, model.ID, 0, llm.ThinkingLevelMedium, "model_id", model.ID)
+}
+
+func (m *Manager) newCodexOAuthService(provider, modelName string, maxTokens int, thinkingLevel llm.ThinkingLevel, logKey, logValue string) llm.Service {
+	if m.db == nil {
+		if m.logger != nil {
+			m.logger.Error("Cannot create OAuth service without database", logKey, logValue, "provider", provider)
+		}
+		return nil
+	}
+
+	cred, err := m.db.GetOAuthCredentials(context.Background(), provider)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
+			if m.logger != nil {
+				m.logger.Debug("OAuth provider not authenticated, skipping model", logKey, logValue, "provider", provider)
+			}
 			return nil
 		}
 		if m.logger != nil {
-			m.logger.Error("Failed to get OAuth credentials", "provider", model.OAuthFallback, "error", err)
+			m.logger.Error("Failed to get OAuth credentials", logKey, logValue, "provider", provider, "error", err)
 		}
 		return nil
 	}
@@ -680,9 +651,22 @@ func (m *Manager) createOAuthService(model Model) llm.Service {
 	}
 
 	return &codex.Service{
-		AccessToken: cred.AccessToken,
-		AccountID:   accountID,
-		Model:       model.ID,
-		HTTPC:       m.httpc,
+		AccessToken:   cred.AccessToken,
+		AccountID:     accountID,
+		Model:         modelName,
+		MaxTokens:     maxTokens,
+		HTTPC:         m.httpc,
+		ThinkingLevel: thinkingLevel,
+	}
+}
+
+func codexThinkingLevel(modelName string) llm.ThinkingLevel {
+	switch {
+	case strings.Contains(modelName, "thinking-low"):
+		return llm.ThinkingLevelLow
+	case strings.Contains(modelName, "thinking-high"):
+		return llm.ThinkingLevelHigh
+	default:
+		return llm.ThinkingLevelMedium
 	}
 }
