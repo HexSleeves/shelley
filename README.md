@@ -28,7 +28,7 @@ The binaries are on the [releases page](https://github.com/HexSleeves/shelley/re
 ## Homebrew (macOS)
 
 ```bash
-brew install --cask HexSleeves/homebrew-tap/shelley
+brew install --cask HexSleeves/tap/shelley
 ```
 
 ## Build from Source
