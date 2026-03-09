@@ -283,16 +283,16 @@ var (
 		APIKeyEnv: OpenAIAPIKeyEnv,
 	}
 
-	GPT53Codex = Model{
-		UserName:  "gpt-5.3-codex",
-		ModelName: "gpt-5.3-codex",
+	GPT54 = Model{
+		UserName:  "gpt-5.4",
+		ModelName: "gpt-5.4",
 		URL:       OpenAIURL,
 		APIKeyEnv: OpenAIAPIKeyEnv,
 	}
 
-	GPT54 = Model{
-		UserName:  "gpt-5.4",
-		ModelName: "gpt-5.4",
+	GPT53Codex = Model{
+		UserName:  "gpt-5.3-codex",
+		ModelName: "gpt-5.3-codex",
 		URL:       OpenAIURL,
 		APIKeyEnv: OpenAIAPIKeyEnv,
 	}

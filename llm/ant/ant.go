@@ -513,6 +513,49 @@ func (s *Service) fromLLMRequest(r *llm.Request) *request {
 	return req
 }
 
+// fromLLMRequestStrippingAllThinking is like fromLLMRequest but strips thinking
+// blocks from ALL assistant messages (including the last one). Used as a fallback
+// when the API rejects thinking signatures — e.g. after model version rotation.
+func (s *Service) fromLLMRequestStrippingAllThinking(r *llm.Request) *request {
+	model := cmp.Or(s.Model, DefaultModel)
+	maxTokens := cmp.Or(s.MaxTokens, maxOutputTokens(model))
+
+	var messages []message
+	for _, m := range r.Messages {
+		if m.Role == llm.MessageRoleAssistant {
+			m = stripThinkingBlocks(m)
+		}
+		msg := fromLLMMessage(m)
+		if len(msg.Content) > 0 {
+			messages = append(messages, msg)
+		}
+	}
+	req := &request{
+		Model:      model,
+		Messages:   messages,
+		MaxTokens:  maxTokens,
+		ToolChoice: fromLLMToolChoice(r.ToolChoice),
+		Tools:      mapped(r.Tools, fromLLMTool),
+		System:     mapped(r.System, fromLLMSystem),
+	}
+
+	if s.ThinkingLevel != llm.ThinkingLevelOff {
+		budget := s.ThinkingLevel.ThinkingBudgetTokens()
+		if maxTokens <= budget {
+			req.MaxTokens = budget + 1024
+		}
+		req.Thinking = &thinking{Type: "enabled", BudgetTokens: budget}
+	}
+
+	if limit := s.maxOutputTokens(); req.MaxTokens > limit {
+		req.MaxTokens = limit
+		if req.Thinking != nil && req.Thinking.BudgetTokens >= req.MaxTokens {
+			req.Thinking.BudgetTokens = req.MaxTokens - 1024
+		}
+	}
+	return req
+}
+
 func toLLMUsage(u usage) llm.Usage {
 	return llm.Usage{
 		InputTokens:              u.InputTokens,
@@ -604,68 +647,6 @@ type streamDelta struct {
 	// message_delta
 	StopReason   string  `json:"stop_reason,omitempty"`
 	StopSequence *string `json:"stop_sequence,omitempty"`
-}
-
-// sanitizeJSONControlChars escapes raw control characters (U+0000–U+001F)
-// that appear inside JSON string values. Per RFC 8259, these must be escaped,
-// but some upstream APIs (e.g. Anthropic) occasionally send them raw in SSE
-// event data. Go's json.Unmarshal correctly rejects them, so we fix them up
-// before parsing.
-//
-// TODO: this is a workaround for Anthropic sending invalid JSON in their
-// streaming API. Remove once they fix their encoder.
-func sanitizeJSONControlChars(data []byte) []byte {
-	// Quick check: if no raw control chars exist, return as-is.
-	// We skip \n and \r because they can't appear inside SSE data lines
-	// (they're line terminators), so they're always structural.
-	hasControl := false
-	for _, b := range data {
-		if b < 0x20 && b != '\n' && b != '\r' {
-			hasControl = true
-			break
-		}
-	}
-	if !hasControl {
-		return data
-	}
-
-	// Walk the bytes, tracking whether we're inside a JSON string.
-	// When we encounter a raw control char inside a string, replace it
-	// with its \uXXXX escape.
-	var buf bytes.Buffer
-	buf.Grow(len(data) + 64)
-	inString := false
-	for i := 0; i < len(data); i++ {
-		b := data[i]
-		if inString {
-			if b == '\\' {
-				// Escaped character — write both bytes and skip next
-				buf.WriteByte(b)
-				if i+1 < len(data) {
-					i++
-					buf.WriteByte(data[i])
-				}
-				continue
-			}
-			if b == '"' {
-				inString = false
-				buf.WriteByte(b)
-				continue
-			}
-			if b < 0x20 {
-				// Raw control char inside a string — escape it
-				fmt.Fprintf(&buf, "\\u%04x", b)
-				continue
-			}
-			buf.WriteByte(b)
-		} else {
-			if b == '"' {
-				inString = true
-			}
-			buf.WriteByte(b)
-		}
-	}
-	return buf.Bytes()
 }
 
 // sseEvent represents a parsed Server-Sent Event per the SSE spec.
@@ -779,7 +760,7 @@ func parseSSEStream(r io.Reader) (*response, error) {
 		}
 
 		var event streamEvent
-		if err := json.Unmarshal(sanitizeJSONControlChars([]byte(data)), &event); err != nil {
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			return fmt.Errorf("parsing SSE event (event=%q, data=%s): %w",
 				sse.EventType, truncateForError(data, 512), err)
 		}
@@ -901,6 +882,10 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 	}
 	payload = append(payload, '\n')
 
+	// strippedPayload is built lazily on the first "Invalid signature" error.
+	// It strips ALL thinking blocks from the request as a fallback.
+	var strippedPayload []byte
+
 	backoff := s.Backoff
 	if backoff == nil {
 		backoff = []time.Duration{15 * time.Second, 30 * time.Second, time.Minute}
@@ -981,6 +966,23 @@ func (s *Service) Do(ctx context.Context, ir *llm.Request) (*llm.Response, error
 				errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: status %v (url=%s, model=%s): %s", attempts+1, time.Now().Format(time.DateTime), resp.Status, url, cmp.Or(s.Model, DefaultModel), buf))
 				continue
 			case resp.StatusCode >= 400 && resp.StatusCode < 500:
+				// Check for "Invalid signature" in thinking blocks — this happens
+				// when the model version rotated and old signatures are no longer valid.
+				// Retry once with ALL thinking blocks stripped from the request.
+				if strippedPayload == nil && strings.Contains(string(buf), "Invalid `signature`") {
+					slog.WarnContext(ctx, "anthropic_invalid_thinking_signature, retrying without thinking blocks",
+						"response", string(buf), "url", url, "model", s.Model)
+					strippedReq := s.fromLLMRequestStrippingAllThinking(ir)
+					strippedReq.Stream = true
+					strippedPayload, err = json.Marshal(strippedReq)
+					if err != nil {
+						return nil, errors.Join(errs, fmt.Errorf("failed to marshal stripped request: %w", err))
+					}
+					strippedPayload = append(strippedPayload, '\n')
+					payload = strippedPayload
+					errs = errors.Join(errs, fmt.Errorf("attempt %d at %s: invalid thinking signature, retrying without thinking blocks", attempts+1, time.Now().Format(time.DateTime)))
+					continue
+				}
 				// some other 400, probably unrecoverable
 				slog.WarnContext(ctx, "anthropic_request_failed", "response", string(buf), "status_code", resp.StatusCode, "url", url, "model", s.Model)
 				return nil, errors.Join(errs, fmt.Errorf("attempt %d at %s: status %v (url=%s, model=%s): %s", attempts+1, time.Now().Format(time.DateTime), resp.Status, url, cmp.Or(s.Model, DefaultModel), buf))

@@ -1291,60 +1291,6 @@ func TestToLLMContentWithNestedToolResults(t *testing.T) {
 	}
 }
 
-func TestSanitizeJSONControlChars(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"no control chars", `{"text":"hello"}`, `{"text":"hello"}`},
-		{"form feed in string", "{\"text\":\"hello\fworld\"}", `{"text":"hello\u000cworld"}`},
-		{"multiple control chars", "{\"t\":\"a\x01b\x02c\"}", `{"t":"a\u0001b\u0002c"}`},
-		{"control char outside string", "{\n\"t\":\"v\"}", "{\n\"t\":\"v\"}"},
-		{"escaped quote in string", `{"t":"say \"hi\""}`, `{"t":"say \"hi\""}`},
-		{"escaped backslash then quote", `{"t":"a\\"}`, `{"t":"a\\"}`},
-		{"tab escaped", "{\"t\":\"a\tb\"}", `{"t":"a\u0009b"}`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := string(sanitizeJSONControlChars([]byte(tt.input)))
-			if got != tt.want {
-				t.Errorf("sanitizeJSONControlChars() = %q, want %q", got, tt.want)
-			}
-			// Verify the result is valid JSON
-			var v any
-			if err := json.Unmarshal([]byte(got), &v); err != nil {
-				t.Errorf("result is not valid JSON: %v", err)
-			}
-		})
-	}
-}
-
-func TestParseSSEStreamFormFeedInText(t *testing.T) {
-	// Simulate Anthropic sending a raw form feed (\f) in a text delta.
-	// This is invalid JSON but happens in practice.
-	var b strings.Builder
-	b.WriteString("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_ff\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"test\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
-	b.WriteString("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
-	// Raw \f inside the text delta value
-	b.WriteString("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\fworld\"}}\n\n")
-	b.WriteString("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
-	b.WriteString("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n")
-	b.WriteString("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
-
-	resp, err := parseSSEStream(strings.NewReader(b.String()))
-	if err != nil {
-		t.Fatalf("parseSSEStream() error = %v", err)
-	}
-	if len(resp.Content) != 1 {
-		t.Fatalf("Content length = %d, want 1", len(resp.Content))
-	}
-	want := "hello\fworld"
-	if resp.Content[0].Text == nil || *resp.Content[0].Text != want {
-		t.Errorf("Content[0].Text = %v, want %q", resp.Content[0].Text, want)
-	}
-}
-
 func TestParseSSEStreamText(t *testing.T) {
 	stream := mockSSEResponse("msg_abc", Claude45Sonnet, "Hello!", 10, 5)
 	resp, err := parseSSEStream(strings.NewReader(stream))
@@ -1587,6 +1533,87 @@ func TestParseSSEStreamError(t *testing.T) {
 	if !strings.Contains(err.Error(), "stream error event") {
 		t.Errorf("error = %q, want to contain %q", err.Error(), "stream error event")
 	}
+}
+
+func TestDoRetriesOnInvalidThinkingSignature(t *testing.T) {
+	// When the API returns "Invalid `signature` in `thinking` block",
+	// Do should retry with all thinking blocks stripped.
+	invalidSigResponse := `{"type":"error","error":{"type":"invalid_request_error","message":"messages.11.content.0: Invalid ` + "`" + `signature` + "`" + ` in ` + "`" + `thinking` + "`" + ` block"}}`
+	successResponse := mockSSEResponse("msg_retry", Claude46Opus, "It works!", 100, 50)
+
+	callCount := 0
+	transport := &roundTripFunc{fn: func(req *http.Request) (*http.Response, error) {
+		callCount++
+		if callCount == 1 {
+			// First call: return invalid signature error
+			return &http.Response{
+				StatusCode: 400,
+				Body:       io.NopCloser(strings.NewReader(invalidSigResponse)),
+				Header:     http.Header{"Content-Type": {"application/json"}},
+			}, nil
+		}
+		// Second call: check that thinking content blocks were stripped, return success.
+		// The request-level "thinking" config (budget_tokens) is fine; we check for
+		// signature which only appears in thinking content blocks.
+		body, _ := io.ReadAll(req.Body)
+		if strings.Contains(string(body), `"signature"`) {
+			t.Errorf("retry request still contains thinking signature")
+		}
+		if strings.Contains(string(body), `"old thinking"`) {
+			t.Errorf("retry request still contains thinking text")
+		}
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(successResponse)),
+			Header:     http.Header{"Content-Type": {"text/event-stream"}},
+		}, nil
+	}}
+
+	s := &Service{
+		APIKey:        "test-key",
+		Model:         Claude46Opus,
+		ThinkingLevel: llm.ThinkingLevelMedium,
+		HTTPC:         &http.Client{Transport: transport},
+		Backoff:       []time.Duration{time.Millisecond}, // fast backoff for tests
+	}
+
+	req := &llm.Request{
+		Messages: []llm.Message{
+			{Role: llm.MessageRoleUser, Content: []llm.Content{
+				{Type: llm.ContentTypeText, Text: "What is 2+2?"},
+			}},
+			{Role: llm.MessageRoleAssistant, Content: []llm.Content{
+				{Type: llm.ContentTypeThinking, Thinking: "old thinking", Signature: "bad-sig"},
+				{Type: llm.ContentTypeText, Text: "4"},
+			}},
+			{Role: llm.MessageRoleUser, Content: []llm.Content{
+				{Type: llm.ContentTypeText, Text: "And 3+3?"},
+			}},
+		},
+	}
+
+	resp, err := s.Do(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Do() error = %v, want nil", err)
+	}
+	if resp == nil {
+		t.Fatal("Do() response = nil")
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 HTTP calls, got %d", callCount)
+	}
+	if resp.Content[0].Text != "It works!" {
+		t.Errorf("unexpected response text: %q", resp.Content[0].Text)
+	}
+}
+
+// roundTripFunc implements http.RoundTripper using a function.
+type roundTripFunc struct {
+	fn func(*http.Request) (*http.Response, error)
+}
+
+func (f *roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f.fn(req)
 }
 
 func TestDoClientError(t *testing.T) {

@@ -44,12 +44,16 @@ func TestGetGitState_RegularRepo(t *testing.T) {
 	runGit(t, tmpDir, "commit", "-m", "initial")
 
 	state := GetGitState(tmpDir)
+	resolvedTmpDir, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to resolve temp dir: %v", err)
+	}
 
 	if !state.IsRepo {
 		t.Error("expected IsRepo to be true")
 	}
-	if state.Worktree != tmpDir {
-		t.Errorf("expected Worktree %q, got %q", tmpDir, state.Worktree)
+	if state.Worktree != resolvedTmpDir {
+		t.Errorf("expected Worktree %q, got %q", resolvedTmpDir, state.Worktree)
 	}
 	// Default branch might be master or main depending on git config
 	if state.Branch != "master" && state.Branch != "main" {
@@ -89,20 +93,28 @@ func TestGetGitState_Worktree(t *testing.T) {
 
 	// Check state in main repo
 	mainState := GetGitState(mainRepo)
+	resolvedMainRepo, err := filepath.EvalSymlinks(mainRepo)
+	if err != nil {
+		t.Fatalf("failed to resolve main repo: %v", err)
+	}
 	if !mainState.IsRepo {
 		t.Error("expected main repo IsRepo to be true")
 	}
-	if mainState.Worktree != mainRepo {
-		t.Errorf("expected main Worktree %q, got %q", mainRepo, mainState.Worktree)
+	if mainState.Worktree != resolvedMainRepo {
+		t.Errorf("expected main Worktree %q, got %q", resolvedMainRepo, mainState.Worktree)
 	}
 
 	// Check state in worktree
 	worktreeState := GetGitState(worktreeDir)
+	resolvedWorktreeDir, err := filepath.EvalSymlinks(worktreeDir)
+	if err != nil {
+		t.Fatalf("failed to resolve worktree dir: %v", err)
+	}
 	if !worktreeState.IsRepo {
 		t.Error("expected worktree IsRepo to be true")
 	}
-	if worktreeState.Worktree != worktreeDir {
-		t.Errorf("expected worktree Worktree %q, got %q", worktreeDir, worktreeState.Worktree)
+	if worktreeState.Worktree != resolvedWorktreeDir {
+		t.Errorf("expected worktree Worktree %q, got %q", resolvedWorktreeDir, worktreeState.Worktree)
 	}
 	if worktreeState.Branch != "feature" {
 		t.Errorf("expected worktree Branch 'feature', got %q", worktreeState.Branch)
