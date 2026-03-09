@@ -25,12 +25,6 @@ curl -Lo shelley "https://github.com/HexSleeves/shelley/releases/latest/download
 
 The binaries are on the [releases page](https://github.com/HexSleeves/shelley/releases/latest).
 
-## Homebrew (macOS)
-
-```bash
-brew install --cask HexSleeves/tap/shelley
-```
-
 ## Build from Source
 
 You'll need Go and Node.

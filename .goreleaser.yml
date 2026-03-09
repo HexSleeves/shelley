@@ -51,20 +51,3 @@ release:
     name: shelley
   draft: false
   prerelease: auto
-
-homebrew_casks:
-  - name: shelley
-    binaries:
-      - shelley
-    skip_upload: "{{ eq .Env.HOMEBREW_TAP_GITHUB_TOKEN \"\" }}"
-    repository:
-      owner: HexSleeves
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Casks
-    homepage: https://github.com/HexSleeves/shelley
-    description: "A mobile-friendly, web-based, multi-modal coding agent"
-    hooks:
-      post:
-        install: |
-          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{caskroom_path}"]
