@@ -1,4 +1,5 @@
 import { Message, StreamResponse, Conversation } from "../types";
+import { mergeMessagesPreserveOrder } from "./messageMerge";
 
 /**
  * Cached data for a single conversation.
@@ -71,18 +72,7 @@ export class ConversationCache {
   updateMessages(conversationId: string, incomingMessages: Message[]): Message[] | undefined {
     const entry = this.peek(conversationId);
     if (!entry) return undefined;
-
-    const byId = new Map<string, Message>();
-    for (const m of entry.messages) byId.set(m.message_id, m);
-    for (const m of incomingMessages) byId.set(m.message_id, m);
-
-    const result: Message[] = [];
-    for (const m of entry.messages) result.push(byId.get(m.message_id)!);
-    for (const m of incomingMessages) {
-      if (!entry.messages.find((p) => p.message_id === m.message_id)) result.push(m);
-    }
-
-    entry.messages = result;
+    entry.messages = mergeMessagesPreserveOrder(entry.messages, incomingMessages);
 
     // Update lastSequenceId
     if (incomingMessages.length > 0) {
@@ -92,7 +82,7 @@ export class ConversationCache {
       }
     }
 
-    return result;
+    return entry.messages;
   }
 
   /** Update context window size for a cached conversation. */

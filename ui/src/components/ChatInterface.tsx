@@ -9,6 +9,7 @@ import {
 } from "../types";
 import { api } from "../services/api";
 import { conversationCache } from "../services/conversationCache";
+import { mergeMessagesPreserveOrder } from "../services/messageMerge";
 import { ThemeMode, getStoredTheme, setStoredTheme, applyTheme } from "../services/theme";
 import { useMarkdown } from "../contexts/MarkdownContext";
 import { useI18n, type Locale, type TranslationKeys } from "../i18n";
@@ -584,6 +585,7 @@ function ChatInterface({
     bytesDownloaded: number;
     bytesTotal?: number;
   } | null>(null);
+  const currentMessagesRef = useRef<Message[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [models, setModels] = useState<
@@ -614,6 +616,10 @@ function ChatInterface({
     const firstReady = initModels.find((m) => m.ready);
     return firstReady?.id || "";
   });
+  useEffect(() => {
+    currentMessagesRef.current = messages;
+  }, [messages]);
+
   // Wrapper to persist model selection to localStorage
   const setSelectedModel = (model: string) => {
     setSelectedModelState(model);
@@ -864,6 +870,7 @@ function ChatInterface({
       setupMessageStream();
     } else {
       // No conversation yet, show empty state
+      currentMessagesRef.current = [];
       setMessages([]);
       setContextWindowSize(0);
       if (loadingProgressDelayRef.current) {
@@ -1074,6 +1081,7 @@ function ChatInterface({
     const cached = conversationCache.get(conversationId);
     if (cached) {
       pendingScrollRef.current = scrollStore.load();
+      currentMessagesRef.current = cached.messages;
       setMessages(cached.messages);
       setLastKnownMessageCount(cached.messages.length);
       messageCountStore.save(cached.messages.length);
@@ -1108,9 +1116,11 @@ function ChatInterface({
       // Set pending scroll target before state updates so useLayoutEffect can handle it.
       pendingScrollRef.current = scrollStore.load();
       const loadedMessages = response.messages ?? [];
-      setMessages(loadedMessages);
-      setLastKnownMessageCount(loadedMessages.length);
-      messageCountStore.save(loadedMessages.length);
+      const mergedMessages = mergeMessagesPreserveOrder(loadedMessages, currentMessagesRef.current);
+      currentMessagesRef.current = mergedMessages;
+      setMessages(mergedMessages);
+      setLastKnownMessageCount(mergedMessages.length);
+      messageCountStore.save(mergedMessages.length);
       loadingRef.current = false;
       setLoading(false);
       if (loadingProgressDelayRef.current) {
@@ -1130,8 +1140,15 @@ function ChatInterface({
       // Populate cache with the fetched data.
       // Compute max sequence_id from loaded messages for SSE resume.
       const loadedMaxSeqId =
-        loadedMessages.length > 0 ? Math.max(...loadedMessages.map((m) => m.sequence_id)) : -1;
-      conversationCache.set(conversationId, response, loadedMaxSeqId);
+        mergedMessages.length > 0 ? Math.max(...mergedMessages.map((m) => m.sequence_id)) : -1;
+      if (loadedMaxSeqId > lastSequenceIdRef.current) {
+        lastSequenceIdRef.current = loadedMaxSeqId;
+      }
+      conversationCache.set(
+        conversationId,
+        { ...response, messages: mergedMessages },
+        loadedMaxSeqId,
+      );
     } catch (err) {
       console.error("Failed to load messages:", err);
       setError("Failed to load messages");
@@ -1216,16 +1233,9 @@ function ChatInterface({
           setStreamingText("");
           setStreamingThinking("");
           setMessages((prev) => {
-            const byId = new Map<string, Message>();
-            for (const m of prev) byId.set(m.message_id, m);
-            for (const m of incomingMessages) byId.set(m.message_id, m);
-            // Preserve original order, then append truly new ones in the order received
-            const result: Message[] = [];
-            for (const m of prev) result.push(byId.get(m.message_id)!);
-            for (const m of incomingMessages) {
-              if (!prev.find((p) => p.message_id === m.message_id)) result.push(m);
-            }
-            return result;
+            const mergedMessages = mergeMessagesPreserveOrder(prev, incomingMessages);
+            currentMessagesRef.current = mergedMessages;
+            return mergedMessages;
           });
           // Keep the cache in sync with streaming updates
           if (conversationId) {
@@ -1680,27 +1690,39 @@ function ChatInterface({
           const llmData =
             typeof message.llm_data === "string" ? JSON.parse(message.llm_data) : message.llm_data;
           if (llmData && llmData.Content && Array.isArray(llmData.Content)) {
-            // Extract text content and tool uses separately
-            const textContents: LLMContent[] = [];
+            const renderableContents: LLMContent[] = [];
             const toolUses: LLMContent[] = [];
 
             llmData.Content.forEach((content: LLMContent) => {
-              if (content.Type === 2) {
-                // text
-                textContents.push(content);
+              if (content.Type === 2 || content.Type === 3 || content.Type === 4) {
+                renderableContents.push(content);
               } else if (content.Type === 5) {
                 // tool_use
                 toolUses.push(content);
               }
             });
 
-            // If we have text content, add it as a message (but only if it's not empty)
-            const textString = textContents
-              .map((c) => c.Text || "")
-              .join("")
-              .trim();
-            if (textString) {
-              items.push({ type: "message", message });
+            const hasRenderableContent = renderableContents.some((content) => {
+              if (content.Type === 2) {
+                return !!content.Text?.trim();
+              }
+              if (content.Type === 3) {
+                return !!content.Thinking?.trim() || !!content.ThinkingSummary?.trim();
+              }
+              if (content.Type === 4) {
+                return true;
+              }
+              return false;
+            });
+            if (hasRenderableContent) {
+              const renderableMessage: Message = {
+                ...message,
+                llm_data: JSON.stringify({
+                  ...llmData,
+                  Content: renderableContents,
+                }),
+              };
+              items.push({ type: "message", message: renderableMessage });
             }
 
             // Check if this message was truncated (tool calls lost)

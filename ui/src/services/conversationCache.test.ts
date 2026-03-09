@@ -139,6 +139,27 @@ export function runTests(): TestResult {
     assert(result![0].llm_data === "updated", "message should be updated");
   });
 
+  test("updateMessages preserves order while updating and appending", () => {
+    const cache = new ConversationCache(5);
+    cache.set(
+      "conv1",
+      makeResponse("conv1", [makeMessage("m1", 1, "first"), makeMessage("m2", 2, "second")]),
+      2,
+    );
+
+    const result = cache.updateMessages("conv1", [
+      makeMessage("m2", 2, "second-updated"),
+      makeMessage("m3", 3, "third"),
+    ]);
+
+    assert(result !== undefined, "should return merged messages");
+    assert(result!.length === 3, `should have 3 messages, got ${result!.length}`);
+    assert(result![0].message_id === "m1", "first message should stay first");
+    assert(result![1].message_id === "m2", "updated message should keep its position");
+    assert(result![1].llm_data === "second-updated", "existing message should be replaced");
+    assert(result![2].message_id === "m3", "new message should append at the end");
+  });
+
   test("updateMessages returns undefined for uncached conversation", () => {
     const cache = new ConversationCache(5);
     const result = cache.updateMessages("missing", [makeMessage("m1", 1)]);

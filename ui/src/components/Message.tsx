@@ -399,6 +399,7 @@ const Message = React.memo(function Message({
       target.closest("a") ||
       target.closest("button") ||
       target.closest("[data-action-bar]") ||
+      target.closest(".tool-header") ||
       target.closest(".bash-tool-header") ||
       target.closest(".patch-tool-header") ||
       target.closest(".generic-tool-header") ||
