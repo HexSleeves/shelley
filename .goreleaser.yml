@@ -47,7 +47,7 @@ changelog:
 
 release:
   github:
-    owner: boldsoftware
+    owner: HexSleeves
     name: shelley
   draft: false
   prerelease: auto
@@ -57,11 +57,11 @@ homebrew_casks:
     binaries:
       - shelley
     repository:
-      owner: boldsoftware
+      owner: HexSleeves
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Casks
-    homepage: https://github.com/boldsoftware/shelley
+    homepage: https://github.com/HexSleeves/shelley
     description: "A mobile-friendly, web-based, multi-modal coding agent"
     hooks:
       post:
