@@ -1,13 +1,13 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -95,41 +95,28 @@ func TestConversationStateAfterServerRestart(t *testing.T) {
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 
-	// Make a streaming request with a context that cancels after we read the first message
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	httpServer := httptest.NewServer(mux)
+	defer httpServer.Close()
 
-	req := httptest.NewRequest("GET", "/api/conversation/"+conv.ConversationID+"/stream", nil).WithContext(ctx)
-	req.Header.Set("Accept", "text/event-stream")
-
-	w := newResponseRecorderWithClose()
-
-	// Run handler in goroutine and close connection after getting first response
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		mux.ServeHTTP(w, req)
-	}()
-
-	// Wait for some data or timeout
-	time.Sleep(500 * time.Millisecond)
-	w.Close()
-	cancel()
-
-	// Wait for handler to finish
-	<-done
-
-	// Parse the first SSE message
-	body := w.Body.String()
-	if !strings.HasPrefix(body, "data: ") {
-		t.Fatalf("Expected SSE data, got: %s", body)
+	snapshotResp, err := http.Get(httpServer.URL + "/api/conversation/" + conv.ConversationID)
+	if err != nil {
+		t.Fatalf("failed to fetch conversation snapshot: %v", err)
 	}
-
-	jsonData := strings.TrimPrefix(strings.Split(body, "\n")[0], "data: ")
-	var response StreamResponse
-	if err := json.Unmarshal([]byte(jsonData), &response); err != nil {
-		t.Fatalf("Failed to parse response: %v", err)
+	var snapshot StreamResponse
+	if err := json.NewDecoder(snapshotResp.Body).Decode(&snapshot); err != nil {
+		snapshotResp.Body.Close()
+		t.Fatalf("failed to parse snapshot: %v", err)
 	}
+	snapshotResp.Body.Close()
+
+	streamResp, err := http.Get(httpServer.URL + "/api/conversation/" + conv.ConversationID + "/stream")
+	if err != nil {
+		t.Fatalf("failed to connect to stream: %v", err)
+	}
+	defer streamResp.Body.Close()
+
+	event := readStreamEventWithTimeout(t, bufio.NewReader(streamResp.Body), 2*time.Second)
+	response := decodeStreamPayload(t, event)
 
 	// Verify conversation state shows agent is NOT working
 	// (because after server restart, no loop is running)
@@ -143,9 +130,9 @@ func TestConversationStateAfterServerRestart(t *testing.T) {
 		t.Error("Expected Working=false after server restart (no active loop)")
 	}
 
-	// Verify messages were loaded
-	if len(response.Messages) != 2 {
-		t.Errorf("Expected 2 messages, got %d", len(response.Messages))
+	// Verify messages are loaded from the snapshot endpoint.
+	if len(snapshot.Messages) != 2 {
+		t.Errorf("Expected 2 messages in snapshot, got %d", len(snapshot.Messages))
 	}
 }
 
@@ -204,37 +191,17 @@ func TestModelRestorationAfterServerRestart(t *testing.T) {
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 
-	// Make a streaming request
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	httpServer := httptest.NewServer(mux)
+	defer httpServer.Close()
 
-	req := httptest.NewRequest("GET", "/api/conversation/"+conv.ConversationID+"/stream", nil).WithContext(ctx)
-	req.Header.Set("Accept", "text/event-stream")
-
-	w := newResponseRecorderWithClose()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		mux.ServeHTTP(w, req)
-	}()
-
-	time.Sleep(500 * time.Millisecond)
-	w.Close()
-	cancel()
-	<-done
-
-	// Parse the first SSE message
-	body := w.Body.String()
-	if !strings.HasPrefix(body, "data: ") {
-		t.Fatalf("Expected SSE data, got: %s", body)
+	streamResp, err := http.Get(httpServer.URL + "/api/conversation/" + conv.ConversationID + "/stream")
+	if err != nil {
+		t.Fatalf("failed to connect to stream: %v", err)
 	}
+	defer streamResp.Body.Close()
 
-	jsonData := strings.TrimPrefix(strings.Split(body, "\n")[0], "data: ")
-	var response StreamResponse
-	if err := json.Unmarshal([]byte(jsonData), &response); err != nil {
-		t.Fatalf("Failed to parse response: %v", err)
-	}
+	event := readStreamEventWithTimeout(t, bufio.NewReader(streamResp.Body), 2*time.Second)
+	response := decodeStreamPayload(t, event)
 
 	// Verify conversation state includes the model from the database
 	if response.ConversationState == nil {

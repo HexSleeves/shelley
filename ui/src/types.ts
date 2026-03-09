@@ -1,17 +1,22 @@
 // Types for Shelley UI
 import {
   Conversation as GeneratedConversation,
+  ConversationRuntime as GeneratedConversationRuntime,
   ConversationWithStateForTS,
   ApiMessageForTS,
   StreamResponseForTS,
+  StreamEventEnvelopeForTS,
   NotificationEventForTS,
+  JobRun as GeneratedJobRun,
   Usage as GeneratedUsage,
   MessageType as GeneratedMessageType,
 } from "./generated-types";
 
 // Re-export generated types
 export type Conversation = GeneratedConversation;
+export type ConversationRuntime = GeneratedConversationRuntime;
 export type ConversationWithState = ConversationWithStateForTS;
+export type JobRun = GeneratedJobRun;
 export type Usage = GeneratedUsage;
 export type MessageType = GeneratedMessageType;
 
@@ -78,6 +83,14 @@ export interface StreamResponse extends Omit<StreamResponseForTS, "messages"> {
   notification_event?: NotificationEvent;
   streaming_text?: string;
   streaming_thinking?: string;
+}
+
+export interface StreamEventEnvelope extends Omit<StreamEventEnvelopeForTS, "payload"> {
+  payload?:
+    | StreamResponse
+    | { job: JobRun }
+    | Record<string, unknown>
+    | null;
 }
 
 // Link represents a custom link that can be added to the UI

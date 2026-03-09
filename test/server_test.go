@@ -483,7 +483,7 @@ func TestSlugEndToEnd(t *testing.T) {
 
 // Test that slug updates are reflected in the stream
 
-// Test that SSE only sends incremental message updates
+// Test that snapshots contain current messages while fresh streams start with a heartbeat.
 func TestSSEIncrementalUpdates(t *testing.T) {
 	// Create temporary database
 	tempDB := t.TempDir() + "/test.db"
@@ -528,27 +528,38 @@ func TestSSEIncrementalUpdates(t *testing.T) {
 		t.Fatalf("Failed to create initial message: %v", err)
 	}
 
-	// Create first SSE client
-	client1, err := http.Get(testServer.URL + "/api/conversation/" + conv.ConversationID + "/stream")
+	// Fresh clients load the full message state via the snapshot endpoint.
+	client1, err := http.Get(testServer.URL + "/api/conversation/" + conv.ConversationID)
 	if err != nil {
-		t.Fatalf("Failed to connect client1: %v", err)
+		t.Fatalf("Failed to fetch client1 snapshot: %v", err)
 	}
 	defer client1.Body.Close()
 
-	// Read initial response from client1 (should contain the first message)
-	// Buffer must be large enough to hold the full response including system prompt
-	buf1 := make([]byte, 32768)
-	n1, err := client1.Body.Read(buf1)
-	if err != nil && err != io.EOF {
-		t.Fatalf("Failed to read from client1: %v", err)
+	body1, err := io.ReadAll(client1.Body)
+	if err != nil {
+		t.Fatalf("Failed to read client1 snapshot: %v", err)
+	}
+	response1 := string(body1)
+	t.Logf("Client1 snapshot: %s", response1)
+
+	if !strings.Contains(response1, "Hello") {
+		t.Fatal("Client1 snapshot should contain initial message")
 	}
 
-	response1 := string(buf1[:n1])
-	t.Logf("Client1 initial response: %s", response1)
+	stream1, err := http.Get(testServer.URL + "/api/conversation/" + conv.ConversationID + "/stream")
+	if err != nil {
+		t.Fatalf("Failed to connect client1 stream: %v", err)
+	}
+	defer stream1.Body.Close()
 
-	// Verify client1 received the initial message
-	if !strings.Contains(response1, "Hello") {
-		t.Fatal("Client1 should have received initial message")
+	buf1 := make([]byte, 32768)
+	n1, err := stream1.Body.Read(buf1)
+	if err != nil && err != io.EOF {
+		t.Fatalf("Failed to read from client1 stream: %v", err)
+	}
+	streamResponse1 := string(buf1[:n1])
+	if !strings.Contains(streamResponse1, `"type":"heartbeat"`) {
+		t.Fatalf("Fresh stream should start with heartbeat, got %s", streamResponse1)
 	}
 
 	// Add a second message
@@ -563,32 +574,27 @@ func TestSSEIncrementalUpdates(t *testing.T) {
 		t.Fatalf("Failed to create second message: %v", err)
 	}
 
-	// Create second SSE client after the new message is added
-	client2, err := http.Get(testServer.URL + "/api/conversation/" + conv.ConversationID + "/stream")
+	client2, err := http.Get(testServer.URL + "/api/conversation/" + conv.ConversationID)
 	if err != nil {
-		t.Fatalf("Failed to connect client2: %v", err)
+		t.Fatalf("Failed to fetch client2 snapshot: %v", err)
 	}
 	defer client2.Body.Close()
 
-	// Read response from client2 (should contain both messages since it's a new client)
-	buf2 := make([]byte, 32768)
-	n2, err := client2.Body.Read(buf2)
-	if err != nil && err != io.EOF {
-		t.Fatalf("Failed to read from client2: %v", err)
+	body2, err := io.ReadAll(client2.Body)
+	if err != nil {
+		t.Fatalf("Failed to read client2 snapshot: %v", err)
 	}
+	response2 := string(body2)
+	t.Logf("Client2 snapshot: %s", response2)
 
-	response2 := string(buf2[:n2])
-	t.Logf("Client2 initial response: %s", response2)
-
-	// Verify client2 received both messages (new client gets full state)
 	if !strings.Contains(response2, "Hello") {
-		t.Fatal("Client2 should have received first message")
+		t.Fatal("Client2 snapshot should contain first message")
 	}
 	if !strings.Contains(response2, "Hi there!") {
-		t.Fatal("Client2 should have received second message")
+		t.Fatal("Client2 snapshot should contain second message")
 	}
 
-	t.Log("SSE incremental updates test completed successfully")
+	t.Log("Snapshot and heartbeat behavior verified successfully")
 }
 
 // TestSystemPromptSentToLLM verifies that the system prompt is included in LLM requests

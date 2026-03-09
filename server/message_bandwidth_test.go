@@ -183,9 +183,15 @@ func TestContextWindowSizeInSSE(t *testing.T) {
 			if err := json.Unmarshal([]byte(jsonStr), &streamResp); err != nil {
 				continue
 			}
-			// Check if context_window_size was present in the JSON
+			var envelope StreamEventEnvelopeV1
+			if err := json.Unmarshal([]byte(jsonStr), &envelope); err != nil {
+				continue
+			}
+			// Check if context_window_size was present in the event payload.
 			var raw map[string]interface{}
-			json.Unmarshal([]byte(jsonStr), &raw)
+			if len(envelope.Payload) > 0 {
+				json.Unmarshal(envelope.Payload, &raw)
+			}
 			_, hasCtx := raw["context_window_size"]
 
 			sseEvents <- sseEvent{

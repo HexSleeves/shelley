@@ -114,10 +114,17 @@ func (s *JobService) StartJob(ctx context.Context, params StartJobParams) (*gene
 		if err != nil {
 			return err
 		}
-		if _, err := appendConversationEventTx(ctx, q, params.ConversationID, &job.JobID, nil, eventTypeJobCreated, job); err != nil {
+		if _, err := appendConversationEventTx(ctx, q, params.ConversationID, &job.JobID, nil, eventTypeJobCreated, streamJobPayload{Job: job}); err != nil {
 			return err
 		}
-		if _, err := appendConversationEventTx(ctx, q, params.ConversationID, &job.JobID, nil, eventTypeConversationStateChanged, runtime); err != nil {
+		if _, err := appendConversationEventTx(ctx, q, params.ConversationID, &job.JobID, nil, eventTypeConversationStateChanged, StreamResponse{
+			Runtime: &runtime,
+			ConversationState: &ConversationState{
+				ConversationID: params.ConversationID,
+				Working:        runtime.Working,
+				Model:          derefOr(runtime.CurrentModelID, ""),
+			},
+		}); err != nil {
 			return err
 		}
 		return nil
@@ -165,10 +172,17 @@ func (s *JobService) FinishJob(ctx context.Context, params FinishJobParams) (*ge
 		if err != nil {
 			return err
 		}
-		if _, err := appendConversationEventTx(ctx, q, current.ConversationID, &job.JobID, nil, eventTypeJobUpdated, job); err != nil {
+		if _, err := appendConversationEventTx(ctx, q, current.ConversationID, &job.JobID, nil, eventTypeJobUpdated, streamJobPayload{Job: job}); err != nil {
 			return err
 		}
-		if _, err := appendConversationEventTx(ctx, q, current.ConversationID, &job.JobID, nil, eventTypeConversationStateChanged, runtime); err != nil {
+		if _, err := appendConversationEventTx(ctx, q, current.ConversationID, &job.JobID, nil, eventTypeConversationStateChanged, StreamResponse{
+			Runtime: &runtime,
+			ConversationState: &ConversationState{
+				ConversationID: current.ConversationID,
+				Working:        runtime.Working,
+				Model:          derefOr(runtime.CurrentModelID, ""),
+			},
+		}); err != nil {
 			return err
 		}
 		return nil

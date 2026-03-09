@@ -9,8 +9,8 @@ export interface CachedConversation {
   messages: Message[];
   contextWindowSize: number;
   conversation: Conversation;
-  /** The highest sequence_id we've seen, used for SSE resume */
-  lastSequenceId: number;
+  /** The highest event_id we've seen, used for SSE resume */
+  lastEventId: number;
 }
 
 /**
@@ -52,7 +52,7 @@ export class ConversationCache {
    * Store conversation data from an initial load (full fetch).
    * Evicts the LRU entry if the cache is full.
    */
-  set(conversationId: string, response: StreamResponse, lastSequenceId: number): void {
+  set(conversationId: string, response: StreamResponse, lastEventId: number): void {
     // Remove first so re-insert puts it at the end
     this.cache.delete(conversationId);
     this.evictIfNeeded();
@@ -60,7 +60,7 @@ export class ConversationCache {
       messages: response.messages ?? [],
       contextWindowSize: response.context_window_size ?? 0,
       conversation: response.conversation,
-      lastSequenceId,
+      lastEventId,
     });
   }
 
@@ -74,15 +74,14 @@ export class ConversationCache {
     if (!entry) return undefined;
     entry.messages = mergeMessagesPreserveOrder(entry.messages, incomingMessages);
 
-    // Update lastSequenceId
-    if (incomingMessages.length > 0) {
-      const maxSeqId = Math.max(...incomingMessages.map((m) => m.sequence_id));
-      if (maxSeqId > entry.lastSequenceId) {
-        entry.lastSequenceId = maxSeqId;
-      }
-    }
-
     return entry.messages;
+  }
+
+  updateLastEventId(conversationId: string, lastEventId: number): void {
+    const entry = this.peek(conversationId);
+    if (entry && lastEventId > entry.lastEventId) {
+      entry.lastEventId = lastEventId;
+    }
   }
 
   /** Update context window size for a cached conversation. */

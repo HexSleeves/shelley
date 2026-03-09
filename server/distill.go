@@ -168,14 +168,18 @@ func (s *Server) handleDistillConversation(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	if _, err := s.eventLog.Append(ctx, conversationID, &job.JobID, &statusMessage.MessageID, eventTypeMessageCreated, statusMessage); err != nil {
+	statusEvent, err := s.eventLog.Append(ctx, conversationID, &job.JobID, &statusMessage.MessageID, eventTypeMessageCreated, StreamResponse{
+		Messages:     toAPIMessages([]generated.Message{*statusMessage}),
+		Conversation: *conversation,
+	})
+	if err != nil {
 		s.logger.Error("Failed to append status message event", "conversationID", conversationID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	// Notify subscribers about the status message
-	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversationID, statusMessage)
+	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversationID, statusMessage, statusEvent.EventID)
 
 	// Run distillation in background
 	ctxNoCancel := context.WithoutCancel(ctx)
@@ -285,15 +289,21 @@ func (s *Server) runDistillation(ctx context.Context, conversationID, jobID, sou
 			runtime, err := s.runtimeState.Get(ctx, conversationID, conversation.Model)
 			if err != nil {
 				logger.Error("Failed to get runtime after distill slug generation", "error", err)
-			} else if _, err := s.eventLog.Append(ctx, conversationID, runtime.ActiveJobID, nil, eventTypeConversationUpdated, conversation); err != nil {
-				logger.Error("Failed to append conversation update event", "error", err)
+			} else {
+				event, err := s.eventLog.Append(ctx, conversationID, runtime.ActiveJobID, nil, eventTypeConversationUpdated, StreamResponse{
+					Conversation: *conversation,
+				})
+				if err != nil {
+					logger.Error("Failed to append conversation update event", "error", err)
+				} else {
+					go s.notifySubscribers(ctx, conversationID, event.EventID)
+				}
 			}
 			go s.publishConversationListUpdate(ConversationListUpdate{
 				Type:         "update",
 				Conversation: conversation,
 			})
 		}
-		go s.notifySubscribers(ctx, conversationID)
 	}
 
 	if _, err := s.jobs.FinishJob(ctx, FinishJobParams{

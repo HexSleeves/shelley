@@ -65,7 +65,7 @@ export function runTests(): TestResult {
     assert(cached !== undefined, "should be cached");
     assert(cached!.messages.length === 2, "should have 2 messages");
     assert(cached!.contextWindowSize === 1000, "should have correct context window size");
-    assert(cached!.lastSequenceId === 2, "should have correct lastSequenceId");
+    assert(cached!.lastEventId === 2, "should have correct lastEventId");
     assert(cached!.conversation.conversation_id === "conv1", "should have correct conversation");
   });
 
@@ -121,9 +121,9 @@ export function runTests(): TestResult {
     assert(result![0].message_id === "m1", "first message preserved");
     assert(result![1].message_id === "m2", "second message appended");
 
-    // lastSequenceId should be updated
+    // lastEventId should be updated
     const cached = cache.get("conv1");
-    assert(cached!.lastSequenceId === 2, "lastSequenceId should be updated to 2");
+    assert(cached!.lastEventId === 2, "lastEventId should be updated to 2");
   });
 
   test("updateMessages updates existing messages in place", () => {
@@ -220,7 +220,7 @@ export function runTests(): TestResult {
 
     const cached = cache.get("a");
     assert(cached!.messages.length === 2, "should have updated messages");
-    assert(cached!.lastSequenceId === 2, "should have updated lastSequenceId");
+    assert(cached!.lastEventId === 2, "should have updated lastEventId");
 
     // Adding d should evict b (now LRU) since a was just re-set
     cache.set("d", makeResponse("d", []), 0);

@@ -162,10 +162,10 @@ class ApiService {
     }
   }
 
-  createMessageStream(conversationId: string, lastSequenceId?: number): EventSource {
+  createMessageStream(conversationId: string, lastEventId?: number): EventSource {
     let url = `${this.baseUrl}/conversation/${conversationId}/stream`;
-    if (lastSequenceId !== undefined && lastSequenceId >= 0) {
-      url += `?last_sequence_id=${lastSequenceId}`;
+    if (lastEventId !== undefined && lastEventId >= 0) {
+      url += `?last_event_id=${lastEventId}`;
     }
     return new EventSource(url);
   }

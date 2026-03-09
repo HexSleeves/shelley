@@ -3,6 +3,7 @@ import {
   Message,
   Conversation,
   StreamResponse,
+  StreamEventEnvelope,
   LLMContent,
   ConversationListUpdate,
   isDistillStatusMessage,
@@ -32,6 +33,13 @@ import TerminalPanel, { EphemeralTerminal } from "./TerminalPanel";
 import ModelPicker from "./ModelPicker";
 import SystemPromptView from "./SystemPromptView";
 import { renderToolCall, formatExecutionTime } from "./toolRendering";
+
+function asStreamPayload(event: StreamEventEnvelope): StreamResponse {
+  if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) {
+    return {} as StreamResponse;
+  }
+  return event.payload as StreamResponse;
+}
 
 interface ContextUsageBarProps {
   contextWindowSize: number;
@@ -773,7 +781,7 @@ function ChatInterface({
   const reconnectTimeoutRef = useRef<number | null>(null);
   const periodicRetryRef = useRef<number | null>(null);
   const heartbeatTimeoutRef = useRef<number | null>(null);
-  const lastSequenceIdRef = useRef<number>(-1);
+  const lastEventIdRef = useRef<number>(0);
   const hasConnectedRef = useRef(false);
   const userScrolledRef = useRef(false);
   const highlightTimeoutRef = useRef<number | null>(null);
@@ -903,14 +911,14 @@ function ChatInterface({
       // Save the latest sequence ID to cache before resetting, so when we
       // switch back we can resume the SSE stream from where we left off.
       // Note: conversationId in this closure is the *old* one being cleaned up.
-      if (conversationId && lastSequenceIdRef.current >= 0) {
+      if (conversationId && lastEventIdRef.current >= 0) {
         const cached = conversationCache.peek(conversationId);
         if (cached) {
-          cached.lastSequenceId = lastSequenceIdRef.current;
+          cached.lastEventId = lastEventIdRef.current;
         }
       }
       // Reset sequence ID and connection tracking when conversation changes
-      lastSequenceIdRef.current = -1;
+      lastEventIdRef.current = 0;
       hasConnectedRef.current = false;
     };
   }, [conversationId]);
@@ -1086,7 +1094,7 @@ function ChatInterface({
       setLastKnownMessageCount(cached.messages.length);
       messageCountStore.save(cached.messages.length);
       setContextWindowSize(cached.contextWindowSize);
-      lastSequenceIdRef.current = cached.lastSequenceId;
+      lastEventIdRef.current = cached.lastEventId;
       loadingRef.current = false;
       setLoading(false);
       setShowLoadingProgressUI(false);
@@ -1130,25 +1138,22 @@ function ChatInterface({
       setShowLoadingProgressUI(false);
       setLoadingProgress(null);
       // ConversationState is sent via the streaming endpoint, not on initial load
-      // We don't update agentWorking here - the stream will provide the current state
       // Always update context window size when loading a conversation.
       // If omitted from response (due to omitempty when 0), default to 0.
       setContextWindowSize(response.context_window_size ?? 0);
+      if (response.runtime) {
+        setAgentWorking(response.runtime.working);
+        if (response.runtime.current_model_id) {
+          setSelectedModel(response.runtime.current_model_id);
+        }
+      }
       if (onConversationUpdate) {
         onConversationUpdate(response.conversation);
       }
       // Populate cache with the fetched data.
       // Compute max sequence_id from loaded messages for SSE resume.
-      const loadedMaxSeqId =
-        mergedMessages.length > 0 ? Math.max(...mergedMessages.map((m) => m.sequence_id)) : -1;
-      if (loadedMaxSeqId > lastSequenceIdRef.current) {
-        lastSequenceIdRef.current = loadedMaxSeqId;
-      }
-      conversationCache.set(
-        conversationId,
-        { ...response, messages: mergedMessages },
-        loadedMaxSeqId,
-      );
+      lastEventIdRef.current = response.last_event_id ?? 0;
+      conversationCache.set(conversationId, { ...response, messages: mergedMessages }, lastEventIdRef.current);
     } catch (err) {
       console.error("Failed to load messages:", err);
       setError("Failed to load messages");
@@ -1190,12 +1195,8 @@ function ChatInterface({
       clearTimeout(heartbeatTimeoutRef.current);
     }
 
-    // Use last_sequence_id to resume from where we left off (avoids resending all messages)
-    const lastSeqId = lastSequenceIdRef.current;
-    const eventSource = api.createMessageStream(
-      conversationId,
-      lastSeqId >= 0 ? lastSeqId : undefined,
-    );
+    const lastEventId = lastEventIdRef.current;
+    const eventSource = api.createMessageStream(conversationId, lastEventId > 0 ? lastEventId : undefined);
     eventSourceRef.current = eventSource;
 
     eventSource.onmessage = (event) => {
@@ -1207,16 +1208,16 @@ function ChatInterface({
       catchingUpRef.current = false;
 
       try {
-        const streamResponse: StreamResponse = JSON.parse(event.data);
+        const streamEvent: StreamEventEnvelope = JSON.parse(event.data);
+        const streamResponse = asStreamPayload(streamEvent);
         const incomingMessages = Array.isArray(streamResponse.messages)
           ? streamResponse.messages
           : [];
 
-        // Track the latest sequence ID for reconnection
-        if (incomingMessages.length > 0) {
-          const maxSeqId = Math.max(...incomingMessages.map((m) => m.sequence_id));
-          if (maxSeqId > lastSequenceIdRef.current) {
-            lastSequenceIdRef.current = maxSeqId;
+        if (typeof streamEvent.event_id === "number" && streamEvent.event_id > lastEventIdRef.current) {
+          lastEventIdRef.current = streamEvent.event_id;
+          if (conversationId) {
+            conversationCache.updateLastEventId(conversationId, streamEvent.event_id);
           }
         }
 

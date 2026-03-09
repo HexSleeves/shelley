@@ -83,6 +83,30 @@ type StreamResponse struct {
 	StreamingThinking string `json:"streaming_thinking,omitempty"`
 }
 
+func (sr *StreamResponse) UnmarshalJSON(data []byte) error {
+	type alias StreamResponse
+	var direct alias
+	if err := json.Unmarshal(data, &direct); err == nil && (direct.Conversation.ConversationID != "" || direct.Messages != nil || direct.Heartbeat || direct.ConversationState != nil || direct.NotificationEvent != nil || direct.ConversationListUpdate != nil || direct.StreamingText != "" || direct.StreamingThinking != "") {
+		*sr = StreamResponse(direct)
+		return nil
+	}
+
+	var envelope StreamEventEnvelopeV1
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return err
+	}
+	if len(envelope.Payload) == 0 {
+		*sr = StreamResponse{}
+		return nil
+	}
+	var payload alias
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		return err
+	}
+	*sr = StreamResponse(payload)
+	return nil
+}
+
 // LLMProvider is an interface for getting LLM services
 type LLMProvider interface {
 	GetService(modelID string) (llm.Service, error)
@@ -839,7 +863,23 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 		return fmt.Errorf("failed to update conversation timestamp: %w", err)
 	}
 
-	if _, err := s.eventLog.Append(ctx, conversationID, activeJobID, &createdMsg.MessageID, eventTypeMessageCreated, createdMsg); err != nil {
+	var conversation generated.Conversation
+	if err := s.db.Queries(ctx, func(q *generated.Queries) error {
+		var err error
+		conversation, err = q.GetConversation(ctx, conversationID)
+		return err
+	}); err != nil {
+		return fmt.Errorf("failed to get conversation for message event: %w", err)
+	}
+
+	apiMessages := toAPIMessages([]generated.Message{*createdMsg})
+	streamData := StreamResponse{
+		Messages:          apiMessages,
+		Conversation:      conversation,
+		ContextWindowSize: calculateContextWindowSizeFromMsg(createdMsg),
+	}
+	event, err := s.eventLog.Append(ctx, conversationID, activeJobID, &createdMsg.MessageID, eventTypeMessageCreated, streamData)
+	if err != nil {
 		return fmt.Errorf("failed to append message event: %w", err)
 	}
 
@@ -858,7 +898,7 @@ func (s *Server) recordMessage(ctx context.Context, conversationID string, messa
 	// Notify subscribers with only the new message - use WithoutCancel because
 	// the HTTP request context may be cancelled after the handler returns, but
 	// we still want the notification to complete so SSE clients see the message immediately
-	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversationID, createdMsg)
+	go s.notifySubscribersNewMessage(context.WithoutCancel(ctx), conversationID, createdMsg, event.EventID)
 
 	return nil
 }
@@ -940,7 +980,7 @@ func convertToLLMMessage(msg generated.Message) (llm.Message, error) {
 // notifySubscribers sends conversation metadata updates (e.g., slug changes) to subscribers.
 // This is used when only the conversation data changes, not the messages.
 // Uses Broadcast instead of Publish to avoid racing with message sequence IDs.
-func (s *Server) notifySubscribers(ctx context.Context, conversationID string) {
+func (s *Server) notifySubscribers(ctx context.Context, conversationID string, eventID int64) {
 	s.mu.Lock()
 	manager, exists := s.activeConversations[conversationID]
 	s.mu.Unlock()
@@ -977,7 +1017,11 @@ func (s *Server) notifySubscribers(ctx context.Context, conversationID string) {
 		Runtime:      runtime,
 		LastEventID:  runtime.LastEventID,
 	}
-	manager.subpub.Broadcast(streamData)
+	envelope := mustTransientStreamEvent(conversationID, runtime.ActiveJobID, eventTypeConversationUpdated, streamData)
+	if eventID > 0 {
+		envelope.EventID = eventID
+	}
+	manager.subpub.Broadcast(envelope)
 
 	// Also notify conversation list subscribers (e.g., slug change)
 	s.publishConversationListUpdate(ConversationListUpdate{
@@ -988,7 +1032,7 @@ func (s *Server) notifySubscribers(ctx context.Context, conversationID string) {
 
 // notifySubscribersNewMessage sends a single new message to all subscribers.
 // This is more efficient than re-sending all messages on each update.
-func (s *Server) notifySubscribersNewMessage(ctx context.Context, conversationID string, newMsg *generated.Message) {
+func (s *Server) notifySubscribersNewMessage(ctx context.Context, conversationID string, newMsg *generated.Message, eventID int64) {
 	s.mu.Lock()
 	manager, exists := s.activeConversations[conversationID]
 	s.mu.Unlock()
@@ -1030,7 +1074,9 @@ func (s *Server) notifySubscribersNewMessage(ctx context.Context, conversationID
 		// Only agent messages have usage data, so context window updates when they arrive.
 		ContextWindowSize: calculateContextWindowSizeFromMsg(newMsg),
 	}
-	manager.subpub.Publish(newMsg.SequenceID, streamData)
+	envelope := mustTransientStreamEvent(conversationID, runtime.ActiveJobID, eventTypeMessageCreated, streamData)
+	envelope.EventID = eventID
+	manager.subpub.Publish(eventID, envelope)
 
 	// Also notify conversation list subscribers about the update (updated_at changed)
 	s.publishConversationListUpdate(ConversationListUpdate{
@@ -1063,7 +1109,13 @@ func (s *Server) broadcastMessageUpdate(ctx context.Context, conversationID stri
 		return fmt.Errorf("failed to get runtime for broadcast: %w", err)
 	}
 
-	if _, err := s.eventLog.Append(ctx, conversationID, runtime.ActiveJobID, &updatedMsg.MessageID, eventTypeMessageUpdated, updatedMsg); err != nil {
+	apiMessages := toAPIMessages([]generated.Message{*updatedMsg})
+	streamData := StreamResponse{
+		Messages:     apiMessages,
+		Conversation: conversation,
+	}
+	event, err := s.eventLog.Append(ctx, conversationID, runtime.ActiveJobID, &updatedMsg.MessageID, eventTypeMessageUpdated, streamData)
+	if err != nil {
 		return fmt.Errorf("failed to append message update event: %w", err)
 	}
 
@@ -1072,15 +1124,11 @@ func (s *Server) broadcastMessageUpdate(ctx context.Context, conversationID stri
 	}
 
 	manager.SetConversation(conversation)
-
-	apiMessages := toAPIMessages([]generated.Message{*updatedMsg})
-	streamData := StreamResponse{
-		Messages:     apiMessages,
-		Conversation: conversation,
-		Runtime:      runtime,
-		LastEventID:  runtime.LastEventID,
-	}
-	manager.subpub.Broadcast(streamData)
+	streamData.Runtime = runtime
+	streamData.LastEventID = runtime.LastEventID
+	envelope := mustTransientStreamEvent(conversationID, runtime.ActiveJobID, eventTypeMessageUpdated, streamData)
+	envelope.EventID = event.EventID
+	manager.subpub.Broadcast(envelope)
 
 	s.publishConversationListUpdate(ConversationListUpdate{
 		Type:         "update",
@@ -1106,10 +1154,14 @@ func (s *Server) publishConversationListUpdate(update ConversationListUpdate) {
 	s.mu.Unlock()
 
 	for _, manager := range managers {
+		targetConversationID := update.ConversationID
+		if update.Conversation != nil {
+			targetConversationID = update.Conversation.ConversationID
+		}
 		streamData := StreamResponse{
 			ConversationListUpdate: &update,
 		}
-		manager.subpub.Broadcast(streamData)
+		manager.subpub.Broadcast(mustTransientStreamEvent(targetConversationID, nil, eventTypeConversationUpdated, streamData))
 	}
 }
 
@@ -1176,9 +1228,13 @@ func (s *Server) broadcastConversationStateUpdateWithNotification(state Conversa
 	for _, manager := range managers {
 		streamData := StreamResponse{
 			ConversationState: &state,
-			NotificationEvent: notifEvent,
 		}
-		manager.subpub.Broadcast(streamData)
+		manager.subpub.Broadcast(mustTransientStreamEvent(state.ConversationID, nil, eventTypeConversationStateChanged, streamData))
+		if notifEvent != nil {
+			manager.subpub.Broadcast(mustTransientStreamEvent(state.ConversationID, nil, eventTypeNotificationCreated, StreamResponse{
+				NotificationEvent: notifEvent,
+			}))
+		}
 	}
 }
 

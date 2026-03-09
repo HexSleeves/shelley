@@ -879,11 +879,14 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 					s.logger.Error("Failed to get runtime after slug generation", "conversationID", conversationID, "error", err)
 					return
 				}
-				if _, err := s.eventLog.Append(ctxNoCancel, conversationID, runtime.ActiveJobID, nil, eventTypeConversationUpdated, conversation); err != nil {
+				event, err := s.eventLog.Append(ctxNoCancel, conversationID, runtime.ActiveJobID, nil, eventTypeConversationUpdated, StreamResponse{
+					Conversation: *conversation,
+				})
+				if err != nil {
 					s.logger.Error("Failed to append conversation update event", "conversationID", conversationID, "error", err)
 					return
 				}
-				go s.notifySubscribers(ctxNoCancel, conversationID)
+				go s.notifySubscribers(ctxNoCancel, conversationID, event.EventID)
 			}
 		}()
 	}
@@ -1033,11 +1036,14 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 					s.logger.Error("Failed to get runtime after slug generation", "conversationID", conversationID, "error", err)
 					return
 				}
-				if _, err := s.eventLog.Append(ctxNoCancel, conversationID, runtime.ActiveJobID, nil, eventTypeConversationUpdated, conversation); err != nil {
+				event, err := s.eventLog.Append(ctxNoCancel, conversationID, runtime.ActiveJobID, nil, eventTypeConversationUpdated, StreamResponse{
+					Conversation: *conversation,
+				})
+				if err != nil {
 					s.logger.Error("Failed to append conversation update event", "conversationID", conversationID, "error", err)
 					return
 				}
-				go s.notifySubscribers(ctxNoCancel, conversationID)
+				go s.notifySubscribers(ctxNoCancel, conversationID, event.EventID)
 			}
 		}()
 	}
@@ -1085,7 +1091,7 @@ func (s *Server) handleCancelConversation(w http.ResponseWriter, r *http.Request
 
 // handleStreamConversation handles GET /conversation/<id>/stream
 // Query parameters:
-//   - last_sequence_id: Resume from this sequence ID (skip messages up to and including this ID)
+//   - last_event_id: Resume from this event ID (skip events up to and including this ID)
 func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request, conversationID string) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1094,11 +1100,11 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 
 	ctx := r.Context()
 
-	// Parse last_sequence_id for resuming streams
-	lastSeqID := int64(-1)
-	if lastSeqStr := r.URL.Query().Get("last_sequence_id"); lastSeqStr != "" {
-		if parsed, err := strconv.ParseInt(lastSeqStr, 10, 64); err == nil {
-			lastSeqID = parsed
+	// Parse last_event_id for resuming streams
+	lastEventID := int64(0)
+	if lastEventStr := r.URL.Query().Get("last_event_id"); lastEventStr != "" {
+		if parsed, err := strconv.ParseInt(lastEventStr, 10, 64); err == nil && parsed >= 0 {
+			lastEventID = parsed
 		}
 	}
 
@@ -1108,54 +1114,16 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// For fresh connections, get messages BEFORE calling getOrCreateConversationManager.
-	// This is important because getOrCreateConversationManager may create a system prompt
-	// message during hydration, and we want to return the messages as they were before.
-	var messages []generated.Message
 	var conversation generated.Conversation
-	resuming := lastSeqID >= 0
-	if lastSeqID < 0 {
-		err := s.db.Queries(ctx, func(q *generated.Queries) error {
-			var err error
-			messages, err = q.ListMessages(ctx, conversationID)
-			if err != nil {
-				return err
-			}
-			conversation, err = q.GetConversation(ctx, conversationID)
-			return err
-		})
-		if err != nil {
-			s.logger.Error("Failed to get conversation data", "conversationID", conversationID, "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-		// Update lastSeqID based on messages we're sending
-		if len(messages) > 0 {
-			lastSeqID = messages[len(messages)-1].SequenceID
-		}
-	} else {
-		// Resuming - fetch any messages we missed while disconnected
-		err := s.db.Queries(ctx, func(q *generated.Queries) error {
-			var err error
-			messages, err = q.ListMessagesSince(ctx, generated.ListMessagesSinceParams{
-				ConversationID: conversationID,
-				SequenceID:     lastSeqID,
-			})
-			if err != nil {
-				return err
-			}
-			conversation, err = q.GetConversation(ctx, conversationID)
-			return err
-		})
-		if err != nil {
-			s.logger.Error("Failed to get conversation data", "conversationID", conversationID, "error", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-		// Update lastSeqID so the subscription starts after these messages
-		if len(messages) > 0 {
-			lastSeqID = messages[len(messages)-1].SequenceID
-		}
+	err := s.db.Queries(ctx, func(q *generated.Queries) error {
+		var err error
+		conversation, err = q.GetConversation(ctx, conversationID)
+		return err
+	})
+	if err != nil {
+		s.logger.Error("Failed to get conversation data", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
 	}
 
 	// Get or create conversation manager to access working state
@@ -1175,77 +1143,41 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 
 	// Subscribe before sending the initial payload so in-place Broadcast updates
 	// cannot land between the initial fetch and the subscription setup.
-	next := manager.subpub.Subscribe(ctx, lastSeqID)
+	next := manager.subpub.Subscribe(ctx, lastEventID)
 
-	// Some messages are updated in place (for example distill status in user_data).
-	// Refresh those snapshots after the subscription is live so we don't miss an
-	// update that lands between the initial DB read and manager creation.
-	if initialSnapshotMayContainMutableMessages(messages) {
-		err := s.db.Queries(ctx, func(q *generated.Queries) error {
-			var err error
-			if resuming {
-				messages, err = q.ListMessagesSince(ctx, generated.ListMessagesSinceParams{
-					ConversationID: conversationID,
-					SequenceID:     lastSeqID,
-				})
-			} else {
-				messages, err = q.ListMessages(ctx, conversationID)
-			}
-			if err != nil {
-				return err
-			}
-			conversation, err = q.GetConversation(ctx, conversationID)
-			return err
-		})
+	catchUpEvents, err := s.db.ListConversationEventsSince(ctx, conversationID, lastEventID)
+	if err != nil {
+		s.logger.Error("Failed to list conversation events", "conversationID", conversationID, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	for _, event := range catchUpEvents {
+		envelope := streamEventFromConversationEvent(event)
+		data, err := json.Marshal(envelope)
 		if err != nil {
-			s.logger.Error("Failed to refresh mutable stream snapshot", "conversationID", conversationID, "error", err)
+			s.logger.Error("Failed to marshal catch-up event", "conversationID", conversationID, "eventID", event.EventID, "error", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		w.(http.Flusher).Flush()
 	}
 
-	// Send initial response (all messages for fresh connections, missed messages for resumes)
-	if len(messages) > 0 {
-		apiMessages := toAPIMessages(messages)
-		// Only send context_window_size for fresh connections where we have all messages.
-		// On resume we only have the missed messages, so the calculation would be wrong.
-		// The client keeps its previous value and gets updates from subsequent stream events.
-		var ctxSize uint64
-		if !resuming {
-			ctxSize = calculateContextWindowSize(apiMessages)
-		}
-		streamData := StreamResponse{
-			Messages:     apiMessages,
-			Conversation: conversation,
-			Runtime:      runtime,
-			LastEventID:  runtime.LastEventID,
-			ConversationState: &ConversationState{
-				ConversationID: conversationID,
-				Working:        runtime.Working,
-				Model:          derefOr(runtime.CurrentModelID, manager.GetModel()),
-			},
-			ContextWindowSize: ctxSize,
-		}
-		data, _ := json.Marshal(streamData)
-		fmt.Fprintf(w, "data: %s\n\n", data)
-		w.(http.Flusher).Flush()
-	} else {
-		// Either resuming or no messages yet - send current state as heartbeat
-		streamData := StreamResponse{
-			Conversation: conversation,
-			Runtime:      runtime,
-			LastEventID:  runtime.LastEventID,
-			ConversationState: &ConversationState{
-				ConversationID: conversationID,
-				Working:        runtime.Working,
-				Model:          derefOr(runtime.CurrentModelID, manager.GetModel()),
-			},
-			Heartbeat: true,
-		}
-		data, _ := json.Marshal(streamData)
-		fmt.Fprintf(w, "data: %s\n\n", data)
-		w.(http.Flusher).Flush()
-	}
+	heartbeat := mustTransientStreamEvent(conversationID, runtime.ActiveJobID, eventTypeHeartbeat, StreamResponse{
+		Conversation: conversation,
+		Runtime:      runtime,
+		LastEventID:  runtime.LastEventID,
+		ConversationState: &ConversationState{
+			ConversationID: conversationID,
+			Working:        runtime.Working,
+			Model:          derefOr(runtime.CurrentModelID, manager.GetModel()),
+		},
+		Heartbeat: true,
+	})
+	data, _ := json.Marshal(heartbeat)
+	fmt.Fprintf(w, "data: %s\n\n", data)
+	w.(http.Flusher).Flush()
 
 	// Start heartbeat goroutine - sends state every 30 seconds if no other messages
 	heartbeatDone := make(chan struct{})
@@ -1277,7 +1209,7 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 					continue
 				}
 
-				heartbeat := StreamResponse{
+				heartbeat := mustTransientStreamEvent(conversationID, runtime.ActiveJobID, eventTypeHeartbeat, StreamResponse{
 					Conversation: conv,
 					Runtime:      runtime,
 					LastEventID:  runtime.LastEventID,
@@ -1287,7 +1219,7 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 						Model:          derefOr(runtime.CurrentModelID, manager.GetModel()),
 					},
 					Heartbeat: true,
-				}
+				})
 				manager.subpub.Broadcast(heartbeat)
 			}
 		}
@@ -1561,7 +1493,9 @@ func (s *Server) handleRenameConversation(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	if _, err := s.eventLog.Append(ctx, conversationID, runtime.ActiveJobID, nil, eventTypeConversationUpdated, conversation); err != nil {
+	if _, err := s.eventLog.Append(ctx, conversationID, runtime.ActiveJobID, nil, eventTypeConversationUpdated, StreamResponse{
+		Conversation: *conversation,
+	}); err != nil {
 		s.logger.Error("Failed to append conversation update event", "conversationID", conversationID, "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return

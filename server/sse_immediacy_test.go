@@ -335,7 +335,13 @@ func TestSSEUserMessageWithExistingConnection(t *testing.T) {
 			if !ok {
 				return
 			}
-			updates <- data
+			var payload StreamResponse
+			if len(data.Payload) > 0 {
+				if err := json.Unmarshal(data.Payload, &payload); err != nil {
+					continue
+				}
+			}
+			updates <- payload
 		}
 	}()
 

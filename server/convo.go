@@ -35,7 +35,7 @@ type ConversationManager struct {
 	toolSetConfig  claudetool.ToolSetConfig
 	toolSet        *claudetool.ToolSet // created per-conversation when loop starts
 
-	subpub *subpub.SubPub[StreamResponse]
+	subpub *subpub.SubPub[StreamEventEnvelopeV1]
 
 	hydrated              bool
 	conversation          generated.Conversation
@@ -69,7 +69,7 @@ func NewConversationManager(conversationID string, database *db.DB, baseLogger *
 		recordMessage:        recordMessage,
 		logger:               logger,
 		toolSetConfig:        toolSetConfig,
-		subpub:               subpub.New[StreamResponse](),
+		subpub:               subpub.New[StreamEventEnvelopeV1](),
 		onStateChange:        onStateChange,
 		systemPromptTemplate: systemPromptTemplate,
 	}
@@ -481,9 +481,9 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 			return
 		}
 		cm.SetConversation(conv)
-		cm.subpub.Broadcast(StreamResponse{
+		cm.subpub.Broadcast(mustTransientStreamEvent(conversationID, nil, eventTypeConversationUpdated, StreamResponse{
 			Conversation: conv,
-		})
+		}))
 	}
 
 	// Create a context with the conversation ID for LLM request recording/prefix dedup
@@ -504,14 +504,14 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 			cm.recordGitStateChange(ctx, state)
 		},
 		OnStreamText: func(text string) {
-			cm.subpub.Broadcast(StreamResponse{
+			cm.subpub.Broadcast(mustTransientStreamEvent(conversationID, nil, eventTypeStreamTextDelta, StreamResponse{
 				StreamingText: text,
-			})
+			}))
 		},
 		OnStreamThinking: func(text string) {
-			cm.subpub.Broadcast(StreamResponse{
+			cm.subpub.Broadcast(mustTransientStreamEvent(conversationID, nil, eventTypeStreamThinkingDelta, StreamResponse{
 				StreamingThinking: text,
-			})
+			}))
 		},
 	})
 
@@ -777,5 +777,5 @@ func (cm *ConversationManager) notifyGitStateChange(ctx context.Context, msg *ge
 		Messages:     apiMessages,
 		Conversation: conversation,
 	}
-	cm.subpub.Publish(msg.SequenceID, streamData)
+	cm.subpub.Broadcast(mustTransientStreamEvent(cm.conversationID, nil, eventTypeMessageCreated, streamData))
 }

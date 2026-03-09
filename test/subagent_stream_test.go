@@ -32,6 +32,11 @@ type StreamResponse struct {
 	Heartbeat              bool                    `json:"heartbeat,omitempty"`
 }
 
+type StreamEventEnvelope struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
 type ConversationState struct {
 	ConversationID string `json:"conversation_id"`
 	Working        bool   `json:"working"`
@@ -168,6 +173,17 @@ func readSSEEventWithTimeout(reader *bufio.Reader, timeout time.Duration) (*Stre
 		}
 
 		data := strings.Join(dataLines, "\n")
+		var envelope StreamEventEnvelope
+		if err := json.Unmarshal([]byte(data), &envelope); err == nil && len(envelope.Payload) > 0 {
+			var response StreamResponse
+			if err := json.Unmarshal(envelope.Payload, &response); err != nil {
+				ch <- result{nil, err}
+				return
+			}
+			ch <- result{&response, nil}
+			return
+		}
+
 		var response StreamResponse
 		if err := json.Unmarshal([]byte(data), &response); err != nil {
 			ch <- result{nil, err}

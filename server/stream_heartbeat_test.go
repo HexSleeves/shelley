@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,200 +11,191 @@ import (
 	"testing"
 	"time"
 
-	"shelley.exe.dev/db"
 	"shelley.exe.dev/llm"
 )
 
-// TestStreamResumeWithLastSequenceID verifies that using last_sequence_id
-// parameter only sends messages newer than the given sequence ID.
-func TestStreamResumeWithLastSequenceID(t *testing.T) {
+func readStreamEventWithTimeout(t *testing.T, reader *bufio.Reader, timeout time.Duration) StreamEventEnvelopeV1 {
+	t.Helper()
+
+	type result struct {
+		event StreamEventEnvelopeV1
+		err   error
+	}
+	ch := make(chan result, 1)
+
+	go func() {
+		var dataLines []string
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				ch <- result{err: err}
+				return
+			}
+			line = strings.TrimSpace(line)
+			if line == "" && len(dataLines) > 0 {
+				break
+			}
+			if strings.HasPrefix(line, "data: ") {
+				dataLines = append(dataLines, strings.TrimPrefix(line, "data: "))
+			}
+		}
+
+		var event StreamEventEnvelopeV1
+		err := json.Unmarshal([]byte(strings.Join(dataLines, "\n")), &event)
+		ch <- result{event: event, err: err}
+	}()
+
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			t.Fatalf("failed to read SSE event: %v", res.err)
+		}
+		return res.event
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for SSE event")
+		return StreamEventEnvelopeV1{}
+	}
+}
+
+func decodeStreamPayload(t *testing.T, event StreamEventEnvelopeV1) StreamResponse {
+	t.Helper()
+	var payload StreamResponse
+	if len(event.Payload) == 0 {
+		return payload
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatalf("failed to decode stream payload: %v", err)
+	}
+	return payload
+}
+
+// TestStreamResumeWithLastEventID verifies that last_event_id replays only newer
+// persisted events and otherwise yields heartbeats.
+func TestStreamResumeWithLastEventID(t *testing.T) {
 	server, database, _ := newTestServer(t)
 
 	ctx := context.Background()
 
-	// Create a conversation with some messages
 	conv, err := database.CreateConversation(ctx, nil, true, nil, nil)
 	if err != nil {
-		t.Fatalf("Failed to create conversation: %v", err)
+		t.Fatalf("failed to create conversation: %v", err)
 	}
 
-	// Add a user message
-	userMsg := llm.Message{
+	if err := server.recordMessage(ctx, conv.ConversationID, llm.Message{
 		Role:    llm.MessageRoleUser,
 		Content: []llm.Content{{Type: llm.ContentTypeText, Text: "Hello"}},
-	}
-	_, err = database.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           db.MessageTypeUser,
-		LLMData:        userMsg,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create user message: %v", err)
+	}, llm.Usage{}); err != nil {
+		t.Fatalf("failed to record user message: %v", err)
 	}
 
-	// Add an agent message
-	agentMsg := llm.Message{
+	if err := server.recordMessage(ctx, conv.ConversationID, llm.Message{
 		Role:      llm.MessageRoleAssistant,
 		Content:   []llm.Content{{Type: llm.ContentTypeText, Text: "Hi there!"}},
 		EndOfTurn: true,
-	}
-	_, err = database.CreateMessage(ctx, db.CreateMessageParams{
-		ConversationID: conv.ConversationID,
-		Type:           db.MessageTypeAgent,
-		LLMData:        agentMsg,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create agent message: %v", err)
+	}, llm.Usage{}); err != nil {
+		t.Fatalf("failed to record agent message: %v", err)
 	}
 
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
+	httpServer := httptest.NewServer(mux)
+	defer httpServer.Close()
 
-	// Test 1: Fresh connection (no last_sequence_id) - should get all messages
-	t.Run("fresh_connection", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
-		req := httptest.NewRequest("GET", "/api/conversation/"+conv.ConversationID+"/stream", nil).WithContext(ctx)
-		req.Header.Set("Accept", "text/event-stream")
-
-		w := newResponseRecorderWithClose()
-
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			mux.ServeHTTP(w, req)
-		}()
-
-		time.Sleep(300 * time.Millisecond)
-		w.Close()
-		cancel()
-		<-done
-
-		body := w.Body.String()
-		if !strings.HasPrefix(body, "data: ") {
-			t.Fatalf("Expected SSE data, got: %s", body)
+	t.Run("initial snapshot", func(t *testing.T) {
+		resp, err := http.Get(httpServer.URL + "/api/conversation/" + conv.ConversationID)
+		if err != nil {
+			t.Fatalf("failed to fetch conversation: %v", err)
 		}
+		defer resp.Body.Close()
 
-		jsonData := strings.TrimPrefix(strings.Split(body, "\n")[0], "data: ")
-		var response StreamResponse
-		if err := json.Unmarshal([]byte(jsonData), &response); err != nil {
-			t.Fatalf("Failed to parse response: %v", err)
+		var snapshot StreamResponse
+		if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+			t.Fatalf("failed to decode snapshot: %v", err)
 		}
-
-		if len(response.Messages) != 2 {
-			t.Errorf("Expected 2 messages, got %d", len(response.Messages))
+		if len(snapshot.Messages) != 2 {
+			t.Fatalf("expected 2 messages in snapshot, got %d", len(snapshot.Messages))
 		}
-		if response.Heartbeat {
-			t.Error("Fresh connection should not be a heartbeat")
+		if snapshot.LastEventID == 0 {
+			t.Fatal("expected snapshot to include last_event_id")
 		}
 	})
 
-	// Find the actual last sequence ID (system prompt may have been added)
-	var lastSeqID int64
-	t.Run("find_last_seq_id", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		req := httptest.NewRequest("GET", "/api/conversation/"+conv.ConversationID+"/stream", nil).WithContext(ctx)
-		req.Header.Set("Accept", "text/event-stream")
-		w := newResponseRecorderWithClose()
-		done := make(chan struct{})
-		go func() { defer close(done); mux.ServeHTTP(w, req) }()
-		time.Sleep(300 * time.Millisecond)
-		w.Close()
-		cancel()
-		<-done
-		jsonData := strings.TrimPrefix(strings.Split(w.Body.String(), "\n")[0], "data: ")
-		var resp StreamResponse
-		if err := json.Unmarshal([]byte(jsonData), &resp); err != nil {
-			t.Fatalf("Failed to parse: %v", err)
+	t.Run("resume_no_new_events", func(t *testing.T) {
+		resp, err := http.Get(httpServer.URL + "/api/conversation/" + conv.ConversationID)
+		if err != nil {
+			t.Fatalf("failed to fetch conversation: %v", err)
 		}
-		for _, m := range resp.Messages {
-			if m.SequenceID > lastSeqID {
-				lastSeqID = m.SequenceID
-			}
+		var snapshot StreamResponse
+		if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+			resp.Body.Close()
+			t.Fatalf("failed to decode snapshot: %v", err)
 		}
-	})
+		resp.Body.Close()
 
-	// Test 2: Resume with no new messages - should get heartbeat
-	t.Run("resume_no_new_messages", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
-		url := fmt.Sprintf("/api/conversation/%s/stream?last_sequence_id=%d", conv.ConversationID, lastSeqID)
-		req := httptest.NewRequest("GET", url, nil).WithContext(ctx)
-		req.Header.Set("Accept", "text/event-stream")
-
-		w := newResponseRecorderWithClose()
-		done := make(chan struct{})
-		go func() { defer close(done); mux.ServeHTTP(w, req) }()
-		time.Sleep(300 * time.Millisecond)
-		w.Close()
-		cancel()
-		<-done
-
-		jsonData := strings.TrimPrefix(strings.Split(w.Body.String(), "\n")[0], "data: ")
-		var response StreamResponse
-		if err := json.Unmarshal([]byte(jsonData), &response); err != nil {
-			t.Fatalf("Failed to parse response: %v", err)
+		streamResp, err := http.Get(fmt.Sprintf("%s/api/conversation/%s/stream?last_event_id=%d", httpServer.URL, conv.ConversationID, snapshot.LastEventID))
+		if err != nil {
+			t.Fatalf("failed to open stream: %v", err)
 		}
-		if len(response.Messages) != 0 {
-			t.Errorf("Expected 0 messages, got %d", len(response.Messages))
+		defer streamResp.Body.Close()
+
+		event := readStreamEventWithTimeout(t, bufio.NewReader(streamResp.Body), 2*time.Second)
+		payload := decodeStreamPayload(t, event)
+		if event.Type != eventTypeHeartbeat {
+			t.Fatalf("expected heartbeat event, got %q", event.Type)
 		}
-		if !response.Heartbeat {
-			t.Error("Resume with no new messages should be a heartbeat")
+		if !payload.Heartbeat {
+			t.Fatal("expected heartbeat payload")
+		}
+		if len(payload.Messages) != 0 {
+			t.Fatalf("expected 0 replayed messages, got %d", len(payload.Messages))
 		}
 	})
 
-	// Test 3: Resume with missed messages - should get the missed messages
-	t.Run("resume_with_missed_messages", func(t *testing.T) {
-		// Add a new message with usage data (simulating what happens while client is disconnected)
-		newMsg := llm.Message{
+	t.Run("resume_with_missed_events", func(t *testing.T) {
+		resp, err := http.Get(httpServer.URL + "/api/conversation/" + conv.ConversationID)
+		if err != nil {
+			t.Fatalf("failed to fetch conversation: %v", err)
+		}
+		var snapshot StreamResponse
+		if err := json.NewDecoder(resp.Body).Decode(&snapshot); err != nil {
+			resp.Body.Close()
+			t.Fatalf("failed to decode snapshot: %v", err)
+		}
+		resp.Body.Close()
+
+		usage := llm.Usage{InputTokens: 5000, OutputTokens: 200}
+		if err := server.recordMessage(ctx, conv.ConversationID, llm.Message{
 			Role:    llm.MessageRoleAssistant,
 			Content: []llm.Content{{Type: llm.ContentTypeText, Text: "You missed this!"}},
+		}, usage); err != nil {
+			t.Fatalf("failed to record replayed message: %v", err)
 		}
-		usage := llm.Usage{InputTokens: 5000, OutputTokens: 200}
-		_, err := database.CreateMessage(ctx, db.CreateMessageParams{
-			ConversationID: conv.ConversationID,
-			Type:           db.MessageTypeAgent,
-			LLMData:        newMsg,
-			UsageData:      &usage,
-		})
+
+		streamResp, err := http.Get(fmt.Sprintf("%s/api/conversation/%s/stream?last_event_id=%d", httpServer.URL, conv.ConversationID, snapshot.LastEventID))
 		if err != nil {
-			t.Fatalf("Failed to create message: %v", err)
+			t.Fatalf("failed to open stream: %v", err)
 		}
+		defer streamResp.Body.Close()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
-		url := fmt.Sprintf("/api/conversation/%s/stream?last_sequence_id=%d", conv.ConversationID, lastSeqID)
-		req := httptest.NewRequest("GET", url, nil).WithContext(ctx)
-		req.Header.Set("Accept", "text/event-stream")
-
-		w := newResponseRecorderWithClose()
-		done := make(chan struct{})
-		go func() { defer close(done); mux.ServeHTTP(w, req) }()
-		time.Sleep(300 * time.Millisecond)
-		w.Close()
-		cancel()
-		<-done
-
-		jsonData := strings.TrimPrefix(strings.Split(w.Body.String(), "\n")[0], "data: ")
-		var response StreamResponse
-		if err := json.Unmarshal([]byte(jsonData), &response); err != nil {
-			t.Fatalf("Failed to parse response: %v", err)
+		event := readStreamEventWithTimeout(t, bufio.NewReader(streamResp.Body), 2*time.Second)
+		payload := decodeStreamPayload(t, event)
+		if event.Type != eventTypeMessageCreated {
+			t.Fatalf("expected replayed message event, got %q", event.Type)
 		}
-		if len(response.Messages) != 1 {
-			t.Errorf("Expected 1 missed message, got %d", len(response.Messages))
+		if payload.Heartbeat {
+			t.Fatal("replayed event should not be a heartbeat")
 		}
-		if response.Heartbeat {
-			t.Error("Should not be a heartbeat when there are missed messages")
+		if len(payload.Messages) != 1 {
+			t.Fatalf("expected 1 replayed message, got %d", len(payload.Messages))
 		}
-		if response.ConversationState == nil {
-			t.Error("Expected ConversationState")
+		if payload.Messages[0].Type != "agent" {
+			t.Fatalf("expected replayed agent message, got %q", payload.Messages[0].Type)
 		}
-		if response.ContextWindowSize != 0 {
-			t.Errorf("Resume should not send context_window_size (got %d)", response.ContextWindowSize)
+		if payload.Messages[0].UsageData == nil {
+			t.Fatal("expected replayed message to include usage data")
+		}
+		if payload.ContextWindowSize == 0 {
+			t.Fatal("expected replayed agent message to include context_window_size")
 		}
 	})
 }

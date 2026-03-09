@@ -8,8 +8,6 @@ import (
 	"shelley.exe.dev/db/generated"
 )
 
-const streamEventVersion int64 = 1
-
 const (
 	eventTypeConversationUpdated      = "conversation.updated"
 	eventTypeConversationStateChanged = "conversation.state.changed"
@@ -46,7 +44,7 @@ func appendConversationEventTx(ctx context.Context, q *generated.Queries, conver
 		ConversationID: conversationID,
 		JobID:          jobID,
 		MessageID:      messageID,
-		StreamVersion:  streamEventVersion,
+		StreamVersion:  streamEventVersionV1,
 		EventType:      eventType,
 		PayloadJson:    payloadJSON,
 	})
