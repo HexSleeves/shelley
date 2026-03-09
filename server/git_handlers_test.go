@@ -58,8 +58,12 @@ func TestGetGitRoot(t *testing.T) {
 	if err != nil {
 		t.Errorf("unexpected error for git directory: %v", err)
 	}
-	if root != gitDir {
-		t.Errorf("expected root %s, got %s", gitDir, root)
+	resolvedGitDir, err := filepath.EvalSymlinks(gitDir)
+	if err != nil {
+		t.Fatalf("failed to resolve git dir: %v", err)
+	}
+	if root != resolvedGitDir {
+		t.Errorf("expected root %s, got %s", resolvedGitDir, root)
 	}
 
 	// Test with subdirectory of git directory
@@ -73,8 +77,8 @@ func TestGetGitRoot(t *testing.T) {
 	if err != nil {
 		t.Errorf("unexpected error for git subdirectory: %v", err)
 	}
-	if root != gitDir {
-		t.Errorf("expected root %s, got %s", gitDir, root)
+	if root != resolvedGitDir {
+		t.Errorf("expected root %s, got %s", resolvedGitDir, root)
 	}
 }
 
@@ -263,8 +267,12 @@ func TestHandleGitDiffs(t *testing.T) {
 	}
 
 	// Check that git root is correct
-	if response.GitRoot != gitDir {
-		t.Errorf("expected git root %s, got %s", gitDir, response.GitRoot)
+	resolvedGitDir, err := filepath.EvalSymlinks(gitDir)
+	if err != nil {
+		t.Fatalf("failed to resolve git dir: %v", err)
+	}
+	if response.GitRoot != resolvedGitDir {
+		t.Errorf("expected git root %s, got %s", resolvedGitDir, response.GitRoot)
 	}
 
 	// Test with subdirectory of git directory

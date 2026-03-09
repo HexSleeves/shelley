@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"shelley.exe.dev/db/generated"
@@ -350,12 +352,19 @@ func TestHandleRenameConversation(t *testing.T) {
 
 func TestHandleWriteFile(t *testing.T) {
 	h := NewTestHarness(t)
+	repoDir := setupTestGitRepo(t)
+	filePath := filepath.Join(repoDir, "test.txt")
+	fileContent := "updated content\n"
 
 	// Test successful POST request
-	filePath := "/tmp/test-file.txt"
-	fileContent := "test content"
-	body := fmt.Sprintf(`{"path": "%s", "content": "%s"}`, filePath, fileContent)
-	req := httptest.NewRequest(http.MethodPost, "/api/write-file", bytes.NewBufferString(body))
+	body, err := json.Marshal(map[string]string{
+		"path":    filePath,
+		"content": fileContent,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/write-file", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.server.handleWriteFile(w, req)
@@ -365,13 +374,13 @@ func TestHandleWriteFile(t *testing.T) {
 	}
 
 	// Verify file was written
-	// content, err := os.ReadFile(filePath)
-	// if err != nil {
-	// 	t.Fatalf("Failed to read written file: %v", err)
-	// }
-	// if string(content) != fileContent {
-	// 	t.Errorf("Expected file content '%s', got '%s'", fileContent, string(content))
-	// }
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("Failed to read written file: %v", err)
+	}
+	if string(content) != fileContent {
+		t.Errorf("Expected file content %q, got %q", fileContent, string(content))
+	}
 
 	// Test method not allowed
 	req = httptest.NewRequest(http.MethodGet, "/api/write-file", nil)
@@ -410,5 +419,38 @@ func TestHandleWriteFile(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Expected status code %d, got %d", http.StatusBadRequest, w.Code)
+	}
+
+	// Test with absolute path outside a git repo (should fail)
+	outsidePath := filepath.Join(t.TempDir(), "outside.txt")
+	req = httptest.NewRequest(http.MethodPost, "/api/write-file", bytes.NewBufferString(
+		fmt.Sprintf(`{"path": "%s", "content": "test"}`, outsidePath),
+	))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	h.server.handleWriteFile(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected status code %d, got %d", http.StatusForbidden, w.Code)
+	}
+
+	// Test symlink target rejection
+	targetPath := filepath.Join(repoDir, "target.txt")
+	if err := os.WriteFile(targetPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("failed to create target file: %v", err)
+	}
+	linkPath := filepath.Join(repoDir, "link.txt")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/write-file", bytes.NewBufferString(
+		fmt.Sprintf(`{"path": "%s", "content": "test"}`, linkPath),
+	))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	h.server.handleWriteFile(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected status code %d, got %d", http.StatusForbidden, w.Code)
 	}
 }

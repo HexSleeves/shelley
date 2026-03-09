@@ -412,8 +412,12 @@ func TestListDirectory(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("failed to parse response: %v", err)
 		}
-		if resp.GitWorktreeRoot != mainRepo {
-			t.Errorf("expected git_worktree_root=%q, got %q", mainRepo, resp.GitWorktreeRoot)
+		resolvedMainRepo, err := filepath.EvalSymlinks(mainRepo)
+		if err != nil {
+			t.Fatalf("failed to resolve main repo: %v", err)
+		}
+		if resp.GitWorktreeRoot != resolvedMainRepo {
+			t.Errorf("expected git_worktree_root=%q, got %q", resolvedMainRepo, resp.GitWorktreeRoot)
 		}
 
 		// List the main repo directory - should NOT have git_worktree_root
@@ -763,7 +767,13 @@ func TestGitCreateWorktree(t *testing.T) {
 
 	// Verify it's a sibling of the repo
 	if filepath.Dir(resp.Path) != tmpDir {
-		t.Errorf("worktree should be sibling of repo, got parent %q, expected %q", filepath.Dir(resp.Path), tmpDir)
+		resolvedTmpDir, err := filepath.EvalSymlinks(tmpDir)
+		if err != nil {
+			t.Fatalf("failed to resolve tmp dir: %v", err)
+		}
+		if filepath.Dir(resp.Path) != resolvedTmpDir {
+			t.Errorf("worktree should be sibling of repo, got parent %q, expected %q", filepath.Dir(resp.Path), resolvedTmpDir)
+		}
 	}
 
 	// Verify name format: myrepo-YYYY-MM-DD

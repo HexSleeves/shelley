@@ -402,73 +402,6 @@ func TestConversationCleanup(t *testing.T) {
 	t.Log("Cleanup completed successfully for conversation:", conv.ConversationID)
 }
 
-func TestSlugGeneration(t *testing.T) {
-	// This test verifies that the slug generation logic is properly integrated
-	// but uses the direct API to avoid timing issues with background goroutines
-
-	// Create temporary database
-	tempDB := t.TempDir() + "/test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
-	if err != nil {
-		t.Fatalf("Failed to create test database: %v", err)
-	}
-	defer database.Close()
-
-	// Run migrations
-	if err := database.Migrate(context.Background()); err != nil {
-		t.Fatalf("Failed to migrate database: %v", err)
-	}
-
-	// Create server
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	llmManager := server.NewLLMServiceManager(&server.LLMConfig{Logger: logger})
-	_ = server.NewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, false, "", "", "", nil)
-
-	// Test slug generation directly to avoid timing issues
-	// ctx := context.Background()
-	// testMessage := "help me create a Python web server"
-
-	// TODO: Fix slug generation test - method moved to slug package
-	// Generate slug directly
-	// slugResult, err := svr.GenerateSlugForConversation(ctx, testMessage)
-	// if err != nil {
-	//	t.Fatalf("Slug generation failed: %v", err)
-	// }
-	// if slugResult == "" {
-	//	t.Error("Generated slug is empty")
-	// } else {
-	//	t.Logf("Generated slug: %s", slugResult)
-	// }
-
-	// TODO: Fix slug tests
-	// Test that the slug is properly sanitized
-	// if !strings.Contains(slugResult, "python") || !strings.Contains(slugResult, "web") {
-	//	t.Logf("Note: Generated slug '%s' may not contain expected keywords, but this is acceptable for AI-generated content", slugResult)
-	// }
-
-	// // Verify slug uniqueness handling
-	// conv, err := database.CreateConversation(ctx, &slugResult, true)
-	// if err != nil {
-	//	t.Fatalf("Failed to create conversation with slug: %v", err)
-	// }
-
-	// TODO: Fix slug generation test
-	// Try to generate the same slug again - should get a unique variant
-	// slugResult2, err := svr.GenerateSlugForConversation(ctx, testMessage)
-	// if err != nil {
-	//	t.Fatalf("Second slug generation failed: %v", err)
-	// }
-
-	// // The second slug should be different (with -1, -2, etc.)
-	// if slugResult == slugResult2 {
-	//	t.Errorf("Expected different slugs for uniqueness, but got same: %s", slugResult)
-	// } else {
-	//	t.Logf("Unique slug generated: %s", slugResult2)
-	// }
-
-	// _ = conv // avoid unused variable warning
-}
-
 func TestSanitizeSlug(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -497,48 +430,6 @@ func TestSanitizeSlug(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestSlugGenerationWithPredictableService(t *testing.T) {
-	// Create server with predictable service only
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	llmManager := server.NewLLMServiceManager(&server.LLMConfig{Logger: logger})
-
-	// Create a temporary database
-	tempDB := t.TempDir() + "/test.db"
-	database, err := db.New(db.Config{DSN: tempDB})
-	if err != nil {
-		t.Fatalf("Failed to create test database: %v", err)
-	}
-	defer database.Close()
-
-	if err := database.Migrate(context.Background()); err != nil {
-		t.Fatalf("Failed to migrate database: %v", err)
-	}
-
-	_ = server.NewServer(database, llmManager, claudetool.ToolSetConfig{}, logger, false, "", "", "", nil)
-
-	// Test slug generation directly
-	// ctx := context.Background()
-	// testMessage := "help me write a python function"
-
-	// TODO: Fix slug generation test
-	// This should work with the predictable service falling back
-	// slugResult, err := svr.GenerateSlugForConversation(ctx, testMessage)
-	// if err != nil {
-	//	t.Fatalf("Slug generation failed: %v", err)
-	// }
-	// if slugResult == "" {
-	//	t.Error("Generated slug is empty")
-	// }
-	// t.Logf("Generated slug: %s", slugResult)
-
-	// TODO: Fix slug sanitization test
-	// Test slug sanitization which should always work
-	// slug := slug.Sanitize(testMessage)
-	// if slug != "help-me-write-a-python-function" {
-	//	t.Errorf("Expected 'help-me-write-a-python-function', got '%s'", slug)
-	// }
 }
 
 func TestSlugEndToEnd(t *testing.T) {

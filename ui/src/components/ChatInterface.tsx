@@ -23,24 +23,6 @@ import {
 import MessageComponent from "./Message";
 import MessageInput from "./MessageInput";
 import DiffViewer from "./DiffViewer";
-import BashTool from "./BashTool";
-import PatchTool from "./PatchTool";
-import ScreenshotTool from "./ScreenshotTool";
-import BrowserTool from "./BrowserTool";
-import BrowserNavigateTool from "./BrowserNavigateTool";
-import BrowserEvalTool from "./BrowserEvalTool";
-import BrowserResizeTool from "./BrowserResizeTool";
-import BrowserConsoleLogsTool from "./BrowserConsoleLogsTool";
-import KeywordSearchTool from "./KeywordSearchTool";
-import ReadImageTool from "./ReadImageTool";
-import ChangeDirTool from "./ChangeDirTool";
-import SubagentTool from "./SubagentTool";
-import LLMOneShotTool from "./LLMOneShotTool";
-import OutputIframeTool from "./OutputIframeTool";
-import BrowserEmulateTool from "./BrowserEmulateTool";
-import BrowserNetworkTool from "./BrowserNetworkTool";
-import BrowserAccessibilityTool from "./BrowserAccessibilityTool";
-import BrowserProfileTool from "./BrowserProfileTool";
 import DirectoryPickerModal from "./DirectoryPickerModal";
 import { useVersionChecker } from "./VersionChecker";
 import ThinkingContent from "./ThinkingContent";
@@ -48,6 +30,7 @@ import MarkdownContent from "./MarkdownContent";
 import TerminalPanel, { EphemeralTerminal } from "./TerminalPanel";
 import ModelPicker from "./ModelPicker";
 import SystemPromptView from "./SystemPromptView";
+import { renderToolCall, formatExecutionTime } from "./toolRendering";
 
 interface ContextUsageBarProps {
   contextWindowSize: number;
@@ -254,34 +237,6 @@ interface CoalescedToolCallProps {
   onCommentTextChange?: (text: string) => void;
 }
 
-// Map tool names to their specialized components.
-// IMPORTANT: When adding a new tool here, also add it to Message.tsx renderContent()
-// for both tool_use and tool_result cases. See AGENTS.md in this directory.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const TOOL_COMPONENTS: Record<string, React.ComponentType<any>> = {
-  bash: BashTool,
-  patch: PatchTool,
-  browser: BrowserTool,
-  screenshot: ScreenshotTool,
-  read_image: ReadImageTool,
-  keyword_search: KeywordSearchTool,
-  change_dir: ChangeDirTool,
-  subagent: SubagentTool,
-  output_iframe: OutputIframeTool,
-  llm_one_shot: LLMOneShotTool,
-  browser_emulate: BrowserEmulateTool,
-  browser_network: BrowserNetworkTool,
-  browser_accessibility: BrowserAccessibilityTool,
-  browser_profile: BrowserProfileTool,
-  // Backwards compat: old per-action tool names stored in existing databases.
-  browser_take_screenshot: ScreenshotTool,
-  browser_navigate: BrowserNavigateTool,
-  browser_eval: BrowserEvalTool,
-  browser_resize: BrowserResizeTool,
-  browser_recent_console_logs: BrowserConsoleLogsTool,
-  browser_clear_console_logs: BrowserConsoleLogsTool,
-};
-
 const CoalescedToolCall = React.memo(function CoalescedToolCall({
   toolName,
   toolInput,
@@ -293,33 +248,10 @@ const CoalescedToolCall = React.memo(function CoalescedToolCall({
   display,
   onCommentTextChange,
 }: CoalescedToolCallProps) {
-  // Calculate execution time if available
-  let executionTime = "";
-  if (hasResult && toolStartTime && toolEndTime) {
-    const start = new Date(toolStartTime).getTime();
-    const end = new Date(toolEndTime).getTime();
-    const diffMs = end - start;
-    if (diffMs < 1000) {
-      executionTime = `${diffMs}ms`;
-    } else {
-      executionTime = `${(diffMs / 1000).toFixed(1)}s`;
-    }
-  }
-
-  // Look up the specialized component for this tool
-  const ToolComponent = TOOL_COMPONENTS[toolName];
-  if (ToolComponent) {
-    const props = {
-      toolInput,
-      isRunning: !hasResult,
-      toolResult,
-      hasError: toolError,
-      executionTime,
-      display,
-      ...(toolName === "patch" && onCommentTextChange ? { onCommentTextChange } : {}),
-    };
-    return <ToolComponent {...props} />;
-  }
+  const executionTime =
+    hasResult && toolStartTime && toolEndTime
+      ? formatExecutionTime(toolStartTime, toolEndTime)
+      : "";
 
   const getToolResultSummary = (results: LLMContent[]) => {
     if (!results || results.length === 0) return "No output";
@@ -387,67 +319,76 @@ const CoalescedToolCall = React.memo(function CoalescedToolCall({
   return (
     <div className="message message-tool" data-testid="tool-call-completed">
       <div className="message-content">
-        <details className={`tool-result-details ${toolError ? "error" : ""}`}>
-          <summary className="tool-result-summary">
-            <div className="tool-result-meta">
-              <div className="flex items-center space-x-2">
-                <svg
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  style={{ width: "1rem", height: "1rem", color: "var(--blue-text)" }}
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                  />
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                  />
-                </svg>
-                <span className="text-sm font-medium text-blue">{toolName}</span>
-                <span className={`tool-result-status text-xs ${toolError ? "error" : "success"}`}>
-                  {toolError ? "✗" : "✓"} {summary}
-                </span>
+        {renderToolCall({
+          toolName,
+          toolInput,
+          isRunning: false,
+          toolResult,
+          hasError: toolError,
+          executionTime,
+          display,
+          onCommentTextChange,
+          fallback: "none",
+        }) || (
+          <details className={`tool-result-details ${toolError ? "error" : ""}`}>
+            <summary className="tool-result-summary">
+              <div className="tool-result-meta">
+                <div className="flex items-center space-x-2">
+                  <svg
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                    style={{ width: "1rem", height: "1rem", color: "var(--blue-text)" }}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                    />
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                    />
+                  </svg>
+                  <span className="text-sm font-medium text-blue">{toolName}</span>
+                  <span className={`tool-result-status text-xs ${toolError ? "error" : "success"}`}>
+                    {toolError ? "✗" : "✓"} {summary}
+                  </span>
+                </div>
+                <div className="tool-result-time">
+                  {executionTime && <span>{executionTime}</span>}
+                </div>
               </div>
-              <div className="tool-result-time">
-                {executionTime && <span>{executionTime}</span>}
-              </div>
-            </div>
-          </summary>
-          <div className="tool-result-content">
-            {/* Show tool input */}
-            <div className="tool-result-section">
-              <div className="tool-result-label">Input:</div>
-              <div className="tool-result-data">
-                {toolInput ? (
-                  typeof toolInput === "string" ? (
-                    toolInput
+            </summary>
+            <div className="tool-result-content">
+              <div className="tool-result-section">
+                <div className="tool-result-label">Input:</div>
+                <div className="tool-result-data">
+                  {toolInput ? (
+                    typeof toolInput === "string" ? (
+                      toolInput
+                    ) : (
+                      JSON.stringify(toolInput, null, 2)
+                    )
                   ) : (
-                    JSON.stringify(toolInput, null, 2)
-                  )
-                ) : (
-                  <span className="text-secondary italic">No input data</span>
-                )}
+                    <span className="text-secondary italic">No input data</span>
+                  )}
+                </div>
+              </div>
+              <div className={`tool-result-section output ${toolError ? "error" : ""}`}>
+                <div className="tool-result-label">Output{toolError ? " (Error)" : ""}:</div>
+                <div className="space-y-2">
+                  {toolResult?.map((result, idx) => (
+                    <div key={idx}>{renderContent(result)}</div>
+                  ))}
+                </div>
               </div>
             </div>
-
-            {/* Show tool output with header */}
-            <div className={`tool-result-section output ${toolError ? "error" : ""}`}>
-              <div className="tool-result-label">Output{toolError ? " (Error)" : ""}:</div>
-              <div className="space-y-2">
-                {toolResult?.map((result, idx) => (
-                  <div key={idx}>{renderContent(result)}</div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </details>
+          </details>
+        )}
       </div>
     </div>
   );

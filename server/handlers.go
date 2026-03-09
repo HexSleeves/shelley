@@ -103,11 +103,15 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Security: only allow writing within certain directories
-	// For now, require the path to be within a git repository
-	clean := filepath.Clean(req.Path)
-	if !filepath.IsAbs(clean) {
-		http.Error(w, "absolute path required", http.StatusBadRequest)
+	clean, err := resolveWritableRepoPath(req.Path)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "git repository") ||
+			strings.Contains(err.Error(), "symlink") ||
+			strings.Contains(err.Error(), "stay within") {
+			status = http.StatusForbidden
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 
@@ -119,6 +123,46 @@ func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func resolveWritableRepoPath(path string) (string, error) {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return "", fmt.Errorf("absolute path required")
+	}
+
+	resolvedDir, err := filepath.EvalSymlinks(filepath.Dir(clean))
+	if err != nil {
+		return "", fmt.Errorf("parent directory not found")
+	}
+	resolvedPath := filepath.Join(resolvedDir, filepath.Base(clean))
+
+	info, err := os.Lstat(resolvedPath)
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("refusing to write through symlink")
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("failed to inspect path: %w", err)
+	}
+
+	gitRoot, err := getGitRoot(resolvedDir)
+	if err != nil {
+		return "", fmt.Errorf("path must be inside a git repository")
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(gitRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve git root: %w", err)
+	}
+
+	relPath, err := filepath.Rel(resolvedRoot, resolvedPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to validate path: %w", err)
+	}
+	if relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path must stay within git repository")
+	}
+
+	return resolvedPath, nil
 }
 
 // handleUpload handles file uploads via POST /api/upload
@@ -732,8 +776,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 	// Get LLM service for the requested model
 	modelID := req.Model
 	if modelID == "" {
-		// Default to GPT-OSS 20B on Fireworks
-		modelID = "gpt-oss-20b-fireworks"
+		modelID = s.defaultModel
 	}
 
 	llmService, err := s.llmManager.GetService(modelID)
@@ -933,6 +976,37 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Subscribe before sending the initial payload so in-place Broadcast updates
+	// cannot land between the initial fetch and the subscription setup.
+	next := manager.subpub.Subscribe(ctx, lastSeqID)
+
+	// Some messages are updated in place (for example distill status in user_data).
+	// Refresh those snapshots after the subscription is live so we don't miss an
+	// update that lands between the initial DB read and manager creation.
+	if initialSnapshotMayContainMutableMessages(messages) {
+		err := s.db.Queries(ctx, func(q *generated.Queries) error {
+			var err error
+			if resuming {
+				messages, err = q.ListMessagesSince(ctx, generated.ListMessagesSinceParams{
+					ConversationID: conversationID,
+					SequenceID:     lastSeqID,
+				})
+			} else {
+				messages, err = q.ListMessages(ctx, conversationID)
+			}
+			if err != nil {
+				return err
+			}
+			conversation, err = q.GetConversation(ctx, conversationID)
+			return err
+		})
+		if err != nil {
+			s.logger.Error("Failed to refresh mutable stream snapshot", "conversationID", conversationID, "error", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	// Send initial response (all messages for fresh connections, missed messages for resumes)
 	if len(messages) > 0 {
 		apiMessages := toAPIMessages(messages)
@@ -971,9 +1045,6 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		w.(http.Flusher).Flush()
 	}
-
-	// Subscribe to new messages after the last one we sent
-	next := manager.subpub.Subscribe(ctx, lastSeqID)
 
 	// Start heartbeat goroutine - sends state every 30 seconds if no other messages
 	heartbeatDone := make(chan struct{})
@@ -1023,6 +1094,15 @@ func (s *Server) handleStreamConversation(w http.ResponseWriter, r *http.Request
 		fmt.Fprintf(w, "data: %s\n\n", data)
 		w.(http.Flusher).Flush()
 	}
+}
+
+func initialSnapshotMayContainMutableMessages(messages []generated.Message) bool {
+	for _, msg := range messages {
+		if msg.UserData != nil || msg.DisplayData != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // handleVersion returns version information as JSON

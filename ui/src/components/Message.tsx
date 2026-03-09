@@ -9,29 +9,13 @@ import {
   Usage,
   isDistillStatusMessage,
 } from "../types";
-import BashTool from "./BashTool";
 import PatchTool from "./PatchTool";
-import ScreenshotTool from "./ScreenshotTool";
-import BrowserTool from "./BrowserTool";
-import BrowserNavigateTool from "./BrowserNavigateTool";
-import BrowserEvalTool from "./BrowserEvalTool";
-import BrowserResizeTool from "./BrowserResizeTool";
-import BrowserConsoleLogsTool from "./BrowserConsoleLogsTool";
 import GenericTool from "./GenericTool";
-import KeywordSearchTool from "./KeywordSearchTool";
-import ReadImageTool from "./ReadImageTool";
-import ChangeDirTool from "./ChangeDirTool";
-import SubagentTool from "./SubagentTool";
-import LLMOneShotTool from "./LLMOneShotTool";
-import OutputIframeTool from "./OutputIframeTool";
-import BrowserEmulateTool from "./BrowserEmulateTool";
-import BrowserNetworkTool from "./BrowserNetworkTool";
-import BrowserAccessibilityTool from "./BrowserAccessibilityTool";
-import BrowserProfileTool from "./BrowserProfileTool";
 import ThinkingContent from "./ThinkingContent";
 import UsageDetailModal from "./UsageDetailModal";
 import MessageActionBar from "./MessageActionBar";
 import { type MarkdownMode } from "../services/settings";
+import { formatExecutionTime, renderToolCall } from "./toolRendering";
 
 /** Should we render markdown for this content block? */
 function shouldRenderMarkdown(
@@ -556,130 +540,17 @@ const Message = React.memo(function Message({
           <div className="whitespace-pre-wrap break-words">{linkifyText(content.Text || "")}</div>
         );
       case "tool_use":
-        // IMPORTANT: When adding a new tool component here, also add it to:
-        // 1. The tool_result case below
-        // 2. TOOL_COMPONENTS map in ChatInterface.tsx
-        // See AGENTS.md in this directory.
-
-        // Use specialized component for bash tool
-        if (content.ToolName === "bash") {
-          return <BashTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        // Use specialized component for patch tool
-        if (content.ToolName === "patch") {
-          return (
-            <PatchTool
-              toolInput={content.ToolInput}
-              isRunning={true}
-              onCommentTextChange={onCommentTextChange}
-            />
-          );
-        }
-        if (content.ToolName === "browser") {
-          return <BrowserTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "screenshot" || content.ToolName === "browser_take_screenshot") {
-          return <ScreenshotTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "change_dir") {
-          return <ChangeDirTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "keyword_search") {
-          return <KeywordSearchTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "read_image") {
-          return <ReadImageTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "subagent") {
-          return <SubagentTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "llm_one_shot") {
-          return <LLMOneShotTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "output_iframe") {
-          return <OutputIframeTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "browser_emulate") {
-          return <BrowserEmulateTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "browser_network") {
-          return <BrowserNetworkTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "browser_accessibility") {
-          return <BrowserAccessibilityTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "browser_profile") {
-          return <BrowserProfileTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        // Backwards compat: old per-action tool names stored in existing databases.
-        if (content.ToolName === "browser_take_screenshot") {
-          return <ScreenshotTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "browser_navigate") {
-          return <BrowserNavigateTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "browser_eval") {
-          return <BrowserEvalTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (content.ToolName === "browser_resize") {
-          return <BrowserResizeTool toolInput={content.ToolInput} isRunning={true} />;
-        }
-        if (
-          content.ToolName === "browser_recent_console_logs" ||
-          content.ToolName === "browser_clear_console_logs"
-        ) {
-          return (
-            <BrowserConsoleLogsTool
-              toolName={content.ToolName}
-              toolInput={content.ToolInput}
-              isRunning={true}
-            />
-          );
-        }
-        // Default rendering for other tools using GenericTool
-        return (
-          <GenericTool
-            toolName={content.ToolName || "Unknown Tool"}
-            toolInput={content.ToolInput}
-            isRunning={true}
-          />
-        );
+        return renderToolCall({
+          toolName: content.ToolName,
+          toolInput: content.ToolInput,
+          isRunning: true,
+          onCommentTextChange,
+        });
       case "tool_result": {
         const hasError = content.ToolError;
         const toolUseId = content.ToolUseID;
         const startTime = content.ToolUseStartTime;
         const endTime = content.ToolUseEndTime;
-
-        // Calculate execution time if available
-        let executionTime = "";
-        if (startTime && endTime) {
-          const start = new Date(startTime).getTime();
-          const end = new Date(endTime).getTime();
-          const diffMs = end - start;
-          if (diffMs < 1000) {
-            executionTime = `${diffMs}ms`;
-          } else {
-            executionTime = `${(diffMs / 1000).toFixed(1)}s`;
-          }
-        }
-
-        // Get a short summary of the tool result for mobile-friendly display
-        const getToolResultSummary = (results: LLMContent[]) => {
-          if (!results || results.length === 0) return "No output";
-
-          const firstResult = results[0];
-          if (firstResult.Type === 2 && firstResult.Text) {
-            // text content
-            const text = firstResult.Text.trim();
-            if (text.length <= 50) return text;
-            return text.substring(0, 47) + "...";
-          }
-
-          return `${results.length} result${results.length > 1 ? "s" : ""}`;
-        };
-
-        // unused for now
-        void getToolResultSummary;
 
         // Get tool information from the toolUseMap or fallback to content
         const toolInfo = toolUseId && toolUseMap && toolUseMap[toolUseId];
@@ -688,257 +559,16 @@ const Message = React.memo(function Message({
           content.ToolName ||
           "Unknown Tool";
         const toolInput = toolInfo && typeof toolInfo === "object" ? toolInfo.input : undefined;
-        const toolName = rawToolName;
-
-        // Use specialized component for bash tool
-        if (toolName === "bash") {
-          return (
-            <BashTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-
-        // Use specialized component for patch tool
-        if (toolName === "patch") {
-          return (
-            <PatchTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-              display={content.Display}
-              onCommentTextChange={onCommentTextChange}
-            />
-          );
-        }
-
-        if (toolName === "browser") {
-          return (
-            <BrowserTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-              display={content.Display}
-            />
-          );
-        }
-
-        if (toolName === "screenshot" || toolName === "browser_take_screenshot") {
-          return (
-            <ScreenshotTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-              display={content.Display}
-            />
-          );
-        }
-
-        if (toolName === "change_dir") {
-          return (
-            <ChangeDirTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-
-        if (toolName === "keyword_search") {
-          return (
-            <KeywordSearchTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-
-        if (toolName === "read_image") {
-          return (
-            <ReadImageTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-
-        if (toolName === "subagent") {
-          return (
-            <SubagentTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-              displayData={content.Display as { slug?: string; conversation_id?: string }}
-            />
-          );
-        }
-
-        if (toolName === "llm_one_shot") {
-          return (
-            <LLMOneShotTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-
-        if (toolName === "output_iframe") {
-          return (
-            <OutputIframeTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-              display={content.Display}
-            />
-          );
-        }
-
-        if (toolName === "browser_emulate") {
-          return (
-            <BrowserEmulateTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-
-        if (toolName === "browser_network") {
-          return (
-            <BrowserNetworkTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-
-        if (toolName === "browser_accessibility") {
-          return (
-            <BrowserAccessibilityTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-
-        if (toolName === "browser_profile") {
-          return (
-            <BrowserProfileTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-
-        // Backwards compat: old per-action tool names stored in existing databases.
-        if (toolName === "browser_take_screenshot") {
-          return (
-            <ScreenshotTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-              display={content.Display}
-            />
-          );
-        }
-        if (toolName === "browser_navigate") {
-          return (
-            <BrowserNavigateTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-        if (toolName === "browser_eval") {
-          return (
-            <BrowserEvalTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-        if (toolName === "browser_resize") {
-          return (
-            <BrowserResizeTool
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-        if (
-          toolName === "browser_recent_console_logs" ||
-          toolName === "browser_clear_console_logs"
-        ) {
-          return (
-            <BrowserConsoleLogsTool
-              toolName={toolName}
-              toolInput={toolInput}
-              isRunning={false}
-              toolResult={content.ToolResult}
-              hasError={hasError}
-              executionTime={executionTime}
-            />
-          );
-        }
-
-        // Default rendering for other tools using GenericTool
-        return (
-          <GenericTool
-            toolName={toolName}
-            toolInput={toolInput}
-            isRunning={false}
-            toolResult={content.ToolResult}
-            hasError={hasError}
-            executionTime={executionTime}
-          />
-        );
+        return renderToolCall({
+          toolName: rawToolName,
+          toolInput,
+          isRunning: false,
+          toolResult: content.ToolResult,
+          hasError,
+          executionTime: formatExecutionTime(startTime, endTime),
+          display: content.Display,
+          onCommentTextChange,
+        });
       }
       case "redacted_thinking": {
         const summary = usage?.reasoning_tokens

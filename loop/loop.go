@@ -161,8 +161,7 @@ func (l *Loop) Go(ctx context.Context) error {
 			l.logger.Debug("processing queued messages", "count", 1)
 			if err := l.processLLMRequest(ctx); err != nil {
 				l.logger.Error("failed to process LLM request", "error", err)
-				time.Sleep(time.Second) // Wait before retrying
-				continue
+				return err
 			}
 			l.logger.Debug("finished processing queued messages")
 		} else {

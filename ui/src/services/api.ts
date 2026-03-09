@@ -10,6 +10,16 @@ import {
   CommitInfo,
 } from "../types";
 
+function concatChunks(chunks: Uint8Array[], totalBytes: number): Uint8Array {
+  const combined = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return combined;
+}
+
 class ApiService {
   private baseUrl = "/api";
 
@@ -112,7 +122,7 @@ class ApiService {
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    const chunks: string[] = [];
+    const chunks: Uint8Array[] = [];
     let bytesDownloaded = 0;
 
     while (true) {
@@ -125,10 +135,9 @@ class ApiService {
         bytesDownloaded,
         bytesTotal: contentLength,
       });
-      chunks.push(decoder.decode(value, { stream: true }));
+      chunks.push(value);
     }
 
-    chunks.push(decoder.decode());
     onProgress?.({
       phase: "parsing",
       bytesDownloaded,
@@ -136,7 +145,7 @@ class ApiService {
     });
 
     try {
-      return JSON.parse(chunks.join("")) as StreamResponse;
+      return JSON.parse(decoder.decode(concatChunks(chunks, bytesDownloaded))) as StreamResponse;
     } catch {
       throw new Error("Failed to parse conversation response");
     }

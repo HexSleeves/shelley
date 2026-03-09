@@ -294,7 +294,8 @@ func (s *Server) updateDistillStatus(ctx context.Context, conversationID, status
 				return
 			}
 			newDataStr := string(newData)
-			if err := s.db.UpdateMessageUserData(ctx, msg.MessageID, &newDataStr); err != nil {
+			bgCtx := context.WithoutCancel(ctx)
+			if err := s.db.UpdateMessageUserData(bgCtx, msg.MessageID, &newDataStr); err != nil {
 				s.logger.Error("Failed to update distill status", "messageID", msg.MessageID, "error", err)
 			}
 			// Re-fetch the updated message and broadcast it to SSE subscribers
@@ -304,9 +305,9 @@ func (s *Server) updateDistillStatus(ctx context.Context, conversationID, status
 			// to an existing message. Publish skips subscribers whose index >= the sequence_id,
 			// so subscribers that already received the "in_progress" message would never
 			// see the update.
-			updatedMsg, err := s.db.GetMessageByID(ctx, msg.MessageID)
+			updatedMsg, err := s.db.GetMessageByID(bgCtx, msg.MessageID)
 			if err == nil {
-				go s.broadcastMessageUpdate(ctx, conversationID, updatedMsg)
+				s.broadcastMessageUpdate(bgCtx, conversationID, updatedMsg)
 			}
 			return
 		}

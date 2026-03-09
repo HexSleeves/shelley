@@ -1,80 +1,79 @@
 Shelley is an agentic loop with tool use. See
 https://sketch.dev/blog/agent-loop for an example of the idea.
 
-When Shelley is started with "go run ./cmd/shelley" it starts a web server and
-opens a sqlite database, and users interact with the ui built in ui/. (The
-server itself is implemented in server/; cmd/shelley is a very thing shim.)
+When Shelley starts via `go run ./cmd/shelley`, it opens the SQLite database,
+starts the HTTP server, and serves the UI bundle from `ui/dist`. The entrypoint
+in `cmd/shelley` is intentionally thin; most behavior lives under `server/`,
+`loop/`, `claudetool/`, and `ui/`.
 
 ## Components
 
 ### ui/
 
-TODO: A mobile-first UI.
 Infrastructure:
-  * pnpm
-  * Typescript
+  * React 18 + TypeScript
   * esbuild
-  * ESLint and eslint-typescript
-  * VueJS
-  * Jest
+  * pnpm
+  * ESLint
+  * lightweight `tsx` unit-style tests
+  * Playwright end-to-end tests
 
 ### db/
 
-conversation(conversation_id, slug, user_initiated):
+The database is SQLite. We use `sqlc` for schema-driven query generation.
+
+`conversation(conversation_id, slug, user_initiated, cwd, model, ...)`
   
   Represents a single conversation.
 
-message(conversation_id, message_id, type (agent/user/tool), llm_data (json), user_data (json), usage (json))
+`message(conversation_id, message_id, type, llm_data, user_data, usage, display_data, ...)`
 
   Messages are visible in the UI and sent to the LLM as part of the 
   conversation. There may be both user-visible and llm-visible representations
   of messages.
 
-The database is sqlite. We use sqlc to define queries and schema.
-
-TODOX: Subagent/tool conversations are done with user_initiated=false.
+Subagent conversations are stored as normal conversations with a
+`parent_conversation_id`.
 
 ### server/
 
-The server serves the agent HTTP API and maintains active
-conversations. The HTTP API is:
+The server exposes the HTTP API, serves the embedded UI, and keeps active
+conversation managers in memory. Conversation updates are streamed to the UI
+over SSE.
 
-/conversations?limit=5000&offset=0
-/conversations?q=search_term
+Important routes include:
 
-  Returns conversations, either matching a query, or matching
-  the paging requirements.
+`/api/conversations`
+  List conversations.
 
-/conversation/<id>
+`/api/conversation/<id>`
+  Return one conversation and its messages.
 
-  Returns all the messages within a conversation.
+`/api/conversation/<id>/stream`
+  SSE stream for incremental updates, heartbeats, and conversation state.
 
-/conversation/<id>/stream
+`/api/conversation/<id>/chat`
+  Append a user message and start processing.
 
-  Returns all the messages within a conversation and
-  uses SSE to wait for updates.
+`/api/conversations/new`
+  Create a conversation and send its first user message.
 
-/conversation/<id>/chat (POST)
-
-  Injects a user message into the conversation
-
-
-When a conversation is active (because it's had a message sent to it, or there
-are stream subscribers), a Conversation struct is instantiated from the data,
-and the server keeps a map of these. Each of these has a Loop struct to keep
-track of the interaction with the llm.
+When a conversation becomes active, the server creates a `ConversationManager`
+that owns the live `loop.Loop`, toolset, working directory, and SSE publisher
+for that conversation.
 
 ## loop/
 
-The core agentic loop.
+The agent loop turns persisted conversation history plus the current toolset
+into LLM requests. It records tool calls, tool results, streamed text/thinking,
+and assistant responses back into the database.
 
 ## claudetool/
 
-Various tools for the LLM.
-
+The tool layer exposes shell execution, patch application, browser automation,
+subagents, screenshots, and related utilities to the model.
 
 ## Other
 
-Shelley talks to the LLMs using the llm/ library.
-
-Logging happens with slog and the tint library.
+Shelley talks to model providers through `llm/` and `models/`.
+Logging uses `slog`.

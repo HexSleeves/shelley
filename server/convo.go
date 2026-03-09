@@ -38,6 +38,8 @@ type ConversationManager struct {
 	subpub *subpub.SubPub[StreamResponse]
 
 	hydrated              bool
+	conversation          generated.Conversation
+	hasConversation       bool
 	hasConversationEvents bool
 	cwd                   string // working directory for tools
 	userEmail             string // exe.dev auth email, from X-ExeDev-Email header
@@ -108,6 +110,19 @@ func (cm *ConversationManager) GetModel() string {
 	return cm.modelID
 }
 
+func (cm *ConversationManager) Conversation() (generated.Conversation, bool) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.conversation, cm.hasConversation
+}
+
+func (cm *ConversationManager) SetConversation(conversation generated.Conversation) {
+	cm.mu.Lock()
+	cm.conversation = conversation
+	cm.hasConversation = true
+	cm.mu.Unlock()
+}
+
 // Hydrate loads conversation metadata from the database and generates a system
 // prompt if one doesn't exist yet. It does NOT cache the message history;
 // ensureLoop reads messages fresh from the DB when creating a loop so that
@@ -168,6 +183,8 @@ func (cm *ConversationManager) Hydrate(ctx context.Context) error {
 	}
 
 	cm.mu.Lock()
+	cm.conversation = *conversation
+	cm.hasConversation = true
 	cm.hasConversationEvents = hasNonSystemMessages(messages)
 	cm.lastActivity = time.Now()
 	cm.hydrated = true
@@ -199,9 +216,7 @@ func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, service ll
 
 	cm.mu.Lock()
 	isFirst := !cm.hasConversationEvents
-	cm.hasConversationEvents = true
 	loopInstance := cm.loop
-	cm.lastActivity = time.Now()
 	recordMessage := cm.recordMessage
 	cm.mu.Unlock()
 
@@ -213,10 +228,15 @@ func (cm *ConversationManager) AcceptUserMessage(ctx context.Context, service ll
 	// even if the loop is busy processing a previous request
 	if recordMessage != nil {
 		if err := recordMessage(ctx, message, llm.Usage{}); err != nil {
-			cm.logger.Error("failed to record user message immediately", "error", err)
-			// Continue anyway - the loop will also try to record it
+			return false, fmt.Errorf("failed to record user message: %w", err)
 		}
 	}
+
+	cm.mu.Lock()
+	isFirst = !cm.hasConversationEvents
+	cm.hasConversationEvents = true
+	cm.lastActivity = time.Now()
+	cm.mu.Unlock()
 
 	loopInstance.QueueUserMessage(message)
 
@@ -455,6 +475,7 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 			logger.Error("failed to get conversation for cwd broadcast", "error", err)
 			return
 		}
+		cm.SetConversation(conv)
 		cm.subpub.Broadcast(StreamResponse{
 			Conversation: conv,
 		})
@@ -489,6 +510,14 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 		},
 	})
 
+	if cm.GetModel() == "" && modelID != "" {
+		if err := db.UpdateConversationModel(context.Background(), conversationID, modelID); err != nil {
+			cancel()
+			toolSet.Cleanup()
+			return fmt.Errorf("failed to persist conversation model: %w", err)
+		}
+	}
+
 	cm.mu.Lock()
 	if cm.loop != nil {
 		cm.mu.Unlock()
@@ -500,21 +529,12 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 		}
 		return nil
 	}
-	// Check if we need to persist the model (for conversations created before model column existed)
-	needsPersist := cm.modelID == "" && modelID != ""
 	cm.loop = loopInstance
 	cm.loopCancel = cancel
 	cm.loopCtx = processCtx
 	cm.modelID = modelID
 	cm.toolSet = toolSet
 	cm.mu.Unlock()
-
-	// Persist model for legacy conversations
-	if needsPersist {
-		if err := db.UpdateConversationModel(context.Background(), conversationID, modelID); err != nil {
-			logger.Error("failed to persist model for legacy conversation", "error", err)
-		}
-	}
 
 	go func() {
 		if err := loopInstance.Go(processCtx); err != nil && err != context.DeadlineExceeded && err != context.Canceled {

@@ -105,8 +105,7 @@ func NewLLMServiceManager(cfg *LLMConfig) LLMProvider {
 
 	manager, err := models.NewManager(modelConfig)
 	if err != nil {
-		// This shouldn't happen in practice, but handle it gracefully
-		cfg.Logger.Error("Failed to create models manager", "error", err)
+		panic(fmt.Errorf("failed to create models manager: %w", err))
 	}
 
 	return manager
@@ -678,48 +677,30 @@ func (s *Server) handleCreateDirectory(w http.ResponseWriter, r *http.Request) {
 
 // getOrCreateConversationManager gets an existing conversation manager or creates a new one.
 func (s *Server) getOrCreateConversationManager(ctx context.Context, conversationID, userEmail string) (*ConversationManager, error) {
-	manager, err, _ := s.conversationGroup.Do(conversationID, func() (*ConversationManager, error) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if manager, exists := s.activeConversations[conversationID]; exists {
-			manager.Touch()
-			return manager, nil
-		}
-
-		recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage) error {
-			return s.recordMessage(ctx, conversationID, message, usage)
-		}
-
-		onStateChange := func(state ConversationState) {
-			s.publishConversationState(state)
-		}
-
-		manager := NewConversationManager(conversationID, s.db, s.logger, s.toolSetConfig, recordMessage, onStateChange)
-		manager.userEmail = userEmail
-		if err := manager.Hydrate(ctx); err != nil {
-			return nil, err
-		}
-
-		s.activeConversations[conversationID] = manager
-		return manager, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return manager, nil
+	return s.getOrCreateConversationManagerWithConfig(ctx, conversationID, userEmail, s.toolSetConfig)
 }
 
 // getOrCreateSubagentConversationManager is like getOrCreateConversationManager but
 // uses a toolSetConfig with SubagentDepth incremented by 1, preventing subagents
 // from spawning their own subagents (when MaxSubagentDepth is 1).
 func (s *Server) getOrCreateSubagentConversationManager(ctx context.Context, conversationID string) (*ConversationManager, error) {
+	subagentConfig := s.toolSetConfig
+	subagentConfig.SubagentDepth = s.toolSetConfig.SubagentDepth + 1
+	return s.getOrCreateConversationManagerWithConfig(ctx, conversationID, "", subagentConfig)
+}
+
+func (s *Server) getOrCreateConversationManagerWithConfig(ctx context.Context, conversationID, userEmail string, toolSetConfig claudetool.ToolSetConfig) (*ConversationManager, error) {
 	manager, err, _ := s.conversationGroup.Do(conversationID, func() (*ConversationManager, error) {
 		s.mu.Lock()
-		defer s.mu.Unlock()
 		if manager, exists := s.activeConversations[conversationID]; exists {
 			manager.Touch()
+			if userEmail != "" {
+				manager.userEmail = userEmail
+			}
+			s.mu.Unlock()
 			return manager, nil
 		}
+		s.mu.Unlock()
 
 		recordMessage := func(ctx context.Context, message llm.Message, usage llm.Usage) error {
 			return s.recordMessage(ctx, conversationID, message, usage)
@@ -729,15 +710,23 @@ func (s *Server) getOrCreateSubagentConversationManager(ctx context.Context, con
 			s.publishConversationState(state)
 		}
 
-		// Use a modified toolSetConfig with incremented depth for subagents
-		subagentConfig := s.toolSetConfig
-		subagentConfig.SubagentDepth = s.toolSetConfig.SubagentDepth + 1
-
-		manager := NewConversationManager(conversationID, s.db, s.logger, subagentConfig, recordMessage, onStateChange)
+		manager := NewConversationManager(conversationID, s.db, s.logger, toolSetConfig, recordMessage, onStateChange)
+		if userEmail != "" {
+			manager.userEmail = userEmail
+		}
 		if err := manager.Hydrate(ctx); err != nil {
 			return nil, err
 		}
 
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if existing, exists := s.activeConversations[conversationID]; exists {
+			existing.Touch()
+			if userEmail != "" {
+				existing.userEmail = userEmail
+			}
+			return existing, nil
+		}
 		s.activeConversations[conversationID] = manager
 		return manager, nil
 	})
@@ -896,6 +885,7 @@ func (s *Server) notifySubscribers(ctx context.Context, conversationID string) {
 		s.logger.Error("Failed to get conversation data for notification", "conversationID", conversationID, "error", err)
 		return
 	}
+	manager.SetConversation(conversation)
 
 	// Broadcast conversation update with no new messages.
 	// Using Broadcast instead of Publish ensures this metadata-only update
@@ -924,17 +914,13 @@ func (s *Server) notifySubscribersNewMessage(ctx context.Context, conversationID
 		return
 	}
 
-	// Get conversation data for the response
-	var conversation generated.Conversation
-	err := s.db.Queries(ctx, func(q *generated.Queries) error {
-		var err error
-		conversation, err = q.GetConversation(ctx, conversationID)
-		return err
-	})
-	if err != nil {
-		s.logger.Error("Failed to get conversation data for notification", "conversationID", conversationID, "error", err)
+	conversation, ok := manager.Conversation()
+	if !ok {
+		s.logger.Error("Missing cached conversation for notification", "conversationID", conversationID)
 		return
 	}
+	conversation.UpdatedAt = newMsg.CreatedAt
+	manager.SetConversation(conversation)
 
 	// Convert the single new message to API format
 	apiMessages := toAPIMessages([]generated.Message{*newMsg})
@@ -985,6 +971,7 @@ func (s *Server) broadcastMessageUpdate(ctx context.Context, conversationID stri
 		s.logger.Error("Failed to get conversation data for broadcast", "conversationID", conversationID, "error", err)
 		return
 	}
+	manager.SetConversation(conversation)
 
 	apiMessages := toAPIMessages([]generated.Message{*updatedMsg})
 	streamData := StreamResponse{
@@ -1009,10 +996,13 @@ func (s *Server) publishConversationListUpdate(update ConversationListUpdate) {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Broadcast to all active conversation managers
+	managers := make([]*ConversationManager, 0, len(s.activeConversations))
 	for _, manager := range s.activeConversations {
+		managers = append(managers, manager)
+	}
+	s.mu.Unlock()
+
+	for _, manager := range managers {
 		streamData := StreamResponse{
 			ConversationListUpdate: &update,
 		}
@@ -1066,10 +1056,13 @@ func (s *Server) publishConversationState(state ConversationState) {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Broadcast to all active conversation managers
+	managers := make([]*ConversationManager, 0, len(s.activeConversations))
 	for _, manager := range s.activeConversations {
+		managers = append(managers, manager)
+	}
+	s.mu.Unlock()
+
+	for _, manager := range managers {
 		streamData := StreamResponse{
 			ConversationState: &state,
 			NotificationEvent: notifEvent,
