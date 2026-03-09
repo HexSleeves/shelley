@@ -56,6 +56,7 @@ homebrew_casks:
   - name: shelley
     binaries:
       - shelley
+    skip_upload: "{{ eq .Env.HOMEBREW_TAP_GITHUB_TOKEN \"\" }}"
     repository:
       owner: HexSleeves
       name: homebrew-tap
