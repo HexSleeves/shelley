@@ -1,22 +1,17 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Message,
   Conversation,
-  StreamResponse,
-  StreamEventEnvelope,
+  ConversationState,
   LLMContent,
   ConversationListUpdate,
   isDistillStatusMessage,
 } from "../types";
 import { api } from "../services/api";
-import { conversationCache } from "../services/conversationCache";
-import { mergeMessagesPreserveOrder } from "../services/messageMerge";
 import { ThemeMode, getStoredTheme, setStoredTheme, applyTheme } from "../services/theme";
 import { useMarkdown } from "../contexts/MarkdownContext";
 import { useI18n, type Locale, type TranslationKeys } from "../i18n";
-import { setFaviconStatus } from "../services/favicon";
 import {
-  handleNotificationEvent,
   isChannelEnabled,
   setChannelEnabled,
   getBrowserNotificationState,
@@ -33,13 +28,9 @@ import TerminalPanel, { EphemeralTerminal } from "./TerminalPanel";
 import ModelPicker from "./ModelPicker";
 import SystemPromptView from "./SystemPromptView";
 import { renderToolCall, formatExecutionTime } from "./toolRendering";
-
-function asStreamPayload(event: StreamEventEnvelope): StreamResponse {
-  if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) {
-    return {} as StreamResponse;
-  }
-  return event.payload as StreamResponse;
-}
+import { useComposerPreferences } from "../hooks/useComposerPreferences";
+import { useConversationSession } from "../hooks/useConversationSession";
+import { useMessageScroll } from "../hooks/useMessageScroll";
 
 interface ContextUsageBarProps {
   contextWindowSize: number;
@@ -426,12 +417,6 @@ function AnimatedWorkingStatus() {
   );
 }
 
-interface ConversationStateUpdate {
-  conversation_id: string;
-  working: boolean;
-  model?: string;
-}
-
 interface ChatInterfaceProps {
   conversationId: string | null;
   onOpenDrawer: () => void;
@@ -440,7 +425,7 @@ interface ChatInterfaceProps {
   currentConversation?: Conversation;
   onConversationUpdate?: (conversation: Conversation) => void;
   onConversationListUpdate?: (update: ConversationListUpdate) => void;
-  onConversationStateUpdate?: (state: ConversationStateUpdate) => void;
+  onConversationStateUpdate?: (state: ConversationState) => void;
   onFirstMessage?: (message: string, model: string, cwd?: string) => Promise<void>;
   onDistillConversation?: (
     sourceConversationId: string,
@@ -585,132 +570,58 @@ function ChatInterface({
   navigateUserMessageTrigger,
   onConversationUnarchived,
 }: ChatInterfaceProps) {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showLoadingProgressUI, setShowLoadingProgressUI] = useState(false);
-  const [loadingProgress, setLoadingProgress] = useState<{
-    phase: "downloading" | "parsing";
-    bytesDownloaded: number;
-    bytesTotal?: number;
-  } | null>(null);
-  const currentMessagesRef = useRef<Message[]>([]);
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [models, setModels] = useState<
-    Array<{
-      id: string;
-      display_name?: string;
-      source?: string;
-      ready: boolean;
-      max_context_tokens?: number;
-    }>
-  >(window.__SHELLEY_INIT__?.models || []);
-  const [selectedModel, setSelectedModelState] = useState<string>(() => {
-    // First check localStorage for a sticky model preference
-    const storedModel = localStorage.getItem("shelley_selected_model");
-    const initModels = window.__SHELLEY_INIT__?.models || [];
-    // Validate that the stored model exists and is ready
-    if (storedModel) {
-      const modelInfo = initModels.find((m) => m.id === storedModel);
-      if (modelInfo?.ready) {
-        return storedModel;
-      }
-    }
-    // Fall back to server default or first ready model
-    const defaultModel = window.__SHELLEY_INIT__?.default_model;
-    if (defaultModel) {
-      return defaultModel;
-    }
-    const firstReady = initModels.find((m) => m.ready);
-    return firstReady?.id || "";
+  const {
+    models,
+    selectedModel,
+    setSelectedModel,
+    selectedCwd,
+    setSelectedCwd,
+    cwdError,
+    setCwdError,
+  } = useComposerPreferences({
+    conversationId,
+    currentConversation,
+    mostRecentCwd,
+    modelsRefreshTrigger,
   });
-  useEffect(() => {
-    currentMessagesRef.current = messages;
-  }, [messages]);
-
-  // Wrapper to persist model selection to localStorage
-  const setSelectedModel = (model: string) => {
-    setSelectedModelState(model);
-    localStorage.setItem("shelley_selected_model", model);
-  };
-  const [selectedCwd, setSelectedCwdState] = useState<string>("");
-  const [cwdInitialized, setCwdInitialized] = useState(false);
-  // Wrapper to persist cwd selection to localStorage
-  const setSelectedCwd = (cwd: string) => {
-    setSelectedCwdState(cwd);
-    localStorage.setItem("shelley_selected_cwd", cwd);
-  };
-
-  // Sync selected model from conversation when switching to an existing conversation.
-  // The conversation's model is authoritative once set.
-  useEffect(() => {
-    if (currentConversation?.model) {
-      setSelectedModel(currentConversation.model);
-    }
-  }, [currentConversation?.conversation_id]);
-
-  // Reset cwdInitialized when switching to a new conversation so we re-read from localStorage
-  useEffect(() => {
-    if (conversationId === null) {
-      setCwdInitialized(false);
-    }
-  }, [conversationId]);
-
-  // Initialize CWD with priority: localStorage > mostRecentCwd > server default
-  useEffect(() => {
-    if (cwdInitialized) return;
-
-    // First check localStorage for a sticky cwd preference
-    const storedCwd = localStorage.getItem("shelley_selected_cwd");
-    if (storedCwd) {
-      setSelectedCwdState(storedCwd);
-      setCwdInitialized(true);
-      return;
-    }
-
-    // Use most recent conversation's CWD if available
-    if (mostRecentCwd) {
-      setSelectedCwdState(mostRecentCwd);
-      setCwdInitialized(true);
-      return;
-    }
-
-    // Fall back to server default
-    const defaultCwd = window.__SHELLEY_INIT__?.default_cwd || "";
-    if (defaultCwd) {
-      setSelectedCwdState(defaultCwd);
-      setCwdInitialized(true);
-    }
-  }, [mostRecentCwd, cwdInitialized]);
-
-  // Refresh models list when triggered (e.g., after custom model changes) or when starting new conversation
-  useEffect(() => {
-    // Skip on initial mount with trigger=0, but always refresh when starting a new conversation
-    if (modelsRefreshTrigger === undefined) return;
-    if (modelsRefreshTrigger === 0 && conversationId !== null) return;
-    api
-      .getModels()
-      .then((newModels) => {
-        setModels(newModels);
-        // Also update the global init data so other components see the change
-        if (window.__SHELLEY_INIT__) {
-          window.__SHELLEY_INIT__.models = newModels;
-        }
-        // Update selectedModel if current selection is no longer ready
-        const currentModelInfo = newModels.find((m) => m.id === selectedModel);
-        if (!currentModelInfo?.ready) {
-          const firstReady = newModels.find((m) => m.ready);
-          if (firstReady) {
-            setSelectedModel(firstReady.id);
-          }
-        }
-      })
-      .catch((err) => {
-        console.error("Failed to refresh models:", err);
-      });
-  }, [modelsRefreshTrigger, conversationId]);
-
-  const [cwdError, setCwdError] = useState<string | null>(null);
+  const {
+    messages,
+    loading,
+    showLoadingProgressUI,
+    loadingProgress,
+    lastKnownMessageCount,
+    sending,
+    cancelling,
+    error,
+    setError,
+    agentWorking,
+    contextWindowSize,
+    reconnectAttempts,
+    isDisconnected,
+    isReconnecting,
+    pauseAutoScroll,
+    streamingText,
+    streamingThinking,
+    sendConversationMessage,
+    cancelConversation,
+    reconnect,
+  } = useConversationSession({
+    conversationId,
+    selectedModel,
+    selectedCwd,
+    onConversationUpdate,
+    onConversationListUpdate,
+    onConversationStateUpdate,
+    onFirstMessage,
+    onReconnect,
+  });
+  const { messagesContainerRef, showScrollToBottom, scrollToBottom } = useMessageScroll({
+    conversationId,
+    messages,
+    loading,
+    navigateUserMessageTrigger,
+    pauseAutoScroll,
+  });
   const [showDirectoryPicker, setShowDirectoryPicker] = useState(false);
   // Settings modal removed - configuration moved to status bar for empty conversations
   const [showOverflowMenu, setShowOverflowMenu] = useState(false);
@@ -734,317 +645,19 @@ function ChatInterface({
   );
   const [diffViewerCwd, setDiffViewerCwd] = useState<string | undefined>(undefined);
   const [diffCommentText, setDiffCommentText] = useState("");
-  const [agentWorking, setAgentWorking] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
-  const [contextWindowSize, setContextWindowSize] = useState(0);
   const terminalURL = window.__SHELLEY_INIT__?.terminal_url || null;
   const links = window.__SHELLEY_INIT__?.links || [];
   const hostname = window.__SHELLEY_INIT__?.hostname || "localhost";
   const { hasUpdate, openModal: openVersionModal, VersionModal } = useVersionChecker();
-  const [reconnectAttempts, setReconnectAttempts] = useState(0);
-  const [isDisconnected, setIsDisconnected] = useState(false);
-  const [isReconnecting, setIsReconnecting] = useState(false);
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const [lastKnownMessageCount, setLastKnownMessageCount] = useState<number | null>(null);
   const [terminalInjectedText, setTerminalInjectedText] = useState<string | null>(null);
-
-  const messageCountStore = useMemo(() => {
-    const key = conversationId ? `shelley_msg_count_${conversationId}` : null;
-    return {
-      save(count: number) {
-        if (!key) return;
-        try {
-          localStorage.setItem(key, String(count));
-        } catch {
-          // Ignore localStorage failures (private mode/quota restrictions)
-        }
-      },
-      load(): number | null {
-        if (!key) return null;
-        try {
-          const v = localStorage.getItem(key);
-          if (v == null) return null;
-          const n = Number(v);
-          return Number.isFinite(n) ? n : null;
-        } catch {
-          return null;
-        }
-      },
-    };
-  }, [conversationId]);
   const [terminalAutoFocusId, setTerminalAutoFocusId] = useState<string | null>(null);
-  const [streamingText, setStreamingText] = useState<string>("");
-  const [streamingThinking, setStreamingThinking] = useState<string>("");
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
   const overflowMenuRef = useRef<HTMLDivElement>(null);
-  const reconnectTimeoutRef = useRef<number | null>(null);
-  const periodicRetryRef = useRef<number | null>(null);
-  const heartbeatTimeoutRef = useRef<number | null>(null);
-  const lastEventIdRef = useRef<number>(0);
-  const hasConnectedRef = useRef(false);
-  const userScrolledRef = useRef(false);
-  const highlightTimeoutRef = useRef<number | null>(null);
-  const loadingRef = useRef(false);
-  const streamingTextRef = useRef("");
-  const streamingThinkingRef = useRef("");
-  const streamingUpdateTimerRef = useRef<number | null>(null);
-  // Pending scroll target from loadMessages: undefined = none, null = bottom, number = saved position
-  const pendingScrollRef = useRef<number | null | undefined>(undefined);
-  const loadingProgressDelayRef = useRef<number | null>(null);
 
   const handleOpenDiffViewer = useCallback((commit: string, cwd?: string) => {
     setDiffViewerInitialCommit(commit);
     setDiffViewerCwd(cwd);
     setShowDiffViewer(true);
   }, []);
-
-  // Navigate to next/previous user message when trigger changes
-  useEffect(() => {
-    if (!navigateUserMessageTrigger || !messagesContainerRef.current) return;
-
-    const container = messagesContainerRef.current;
-    const userMessageEls = container.querySelectorAll(".message-user");
-    if (userMessageEls.length === 0) return;
-
-    const direction = navigateUserMessageTrigger > 0 ? 1 : -1;
-
-    // Find which user message is currently closest to the top of the viewport
-    const containerRect = container.getBoundingClientRect();
-    const viewportTop = containerRect.top;
-    let closestIdx = -1;
-    let closestDist = Infinity;
-    userMessageEls.forEach((el, i) => {
-      const rect = el.getBoundingClientRect();
-      const dist = Math.abs(rect.top - viewportTop);
-      if (dist < closestDist) {
-        closestDist = dist;
-        closestIdx = i;
-      }
-    });
-
-    // Move in the requested direction
-    let targetIdx = closestIdx + direction;
-    // If the closest message is not near the top (user hasn't navigated to it),
-    // and we're going forward, stay on closestIdx if it's below viewport
-    if (direction === 1 && closestIdx >= 0) {
-      const rect = userMessageEls[closestIdx].getBoundingClientRect();
-      if (rect.top > viewportTop + 50) {
-        targetIdx = closestIdx; // navigate to this one first
-      }
-    }
-
-    targetIdx = Math.max(0, Math.min(targetIdx, userMessageEls.length - 1));
-    const targetEl = userMessageEls[targetIdx] as HTMLElement;
-    targetEl.scrollIntoView({ behavior: "smooth", block: "start" });
-
-    // Clear any existing highlight timeout
-    if (highlightTimeoutRef.current) {
-      clearTimeout(highlightTimeoutRef.current);
-      highlightTimeoutRef.current = null;
-    }
-
-    // Add highlight to the navigated message
-    // Remove and re-add the class to restart animation if already highlighted
-    targetEl.classList.remove("message-highlight");
-    void targetEl.offsetWidth; // Force reflow to restart animation
-    targetEl.classList.add("message-highlight");
-
-    const removeHighlight = () => {
-      targetEl.classList.remove("message-highlight");
-      if (highlightTimeoutRef.current) {
-        clearTimeout(highlightTimeoutRef.current);
-        highlightTimeoutRef.current = null;
-      }
-    };
-    targetEl.addEventListener("animationend", removeHighlight, { once: true });
-    // Fallback cleanup in case animationend doesn't fire
-    highlightTimeoutRef.current = setTimeout(removeHighlight, 2000) as unknown as number;
-
-    // Cleanup on unmount or next navigation
-    return () => {
-      if (highlightTimeoutRef.current) {
-        clearTimeout(highlightTimeoutRef.current);
-        highlightTimeoutRef.current = null;
-      }
-    };
-  }, [navigateUserMessageTrigger]);
-
-  // Load messages and set up streaming
-  useEffect(() => {
-    if (conversationId) {
-      setAgentWorking(false);
-      loadMessages();
-      setupMessageStream();
-    } else {
-      // No conversation yet, show empty state
-      currentMessagesRef.current = [];
-      setMessages([]);
-      setContextWindowSize(0);
-      if (loadingProgressDelayRef.current) {
-        clearTimeout(loadingProgressDelayRef.current);
-        loadingProgressDelayRef.current = null;
-      }
-      setShowLoadingProgressUI(false);
-      setLoadingProgress(null);
-      loadingRef.current = false;
-      setLoading(false);
-    }
-
-    return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (periodicRetryRef.current) {
-        clearInterval(periodicRetryRef.current);
-      }
-      if (heartbeatTimeoutRef.current) {
-        clearTimeout(heartbeatTimeoutRef.current);
-      }
-      if (loadingProgressDelayRef.current) {
-        clearTimeout(loadingProgressDelayRef.current);
-        loadingProgressDelayRef.current = null;
-      }
-      // Save the latest sequence ID to cache before resetting, so when we
-      // switch back we can resume the SSE stream from where we left off.
-      // Note: conversationId in this closure is the *old* one being cleaned up.
-      if (conversationId && lastEventIdRef.current >= 0) {
-        const cached = conversationCache.peek(conversationId);
-        if (cached) {
-          cached.lastEventId = lastEventIdRef.current;
-        }
-      }
-      // Reset sequence ID and connection tracking when conversation changes
-      lastEventIdRef.current = 0;
-      hasConnectedRef.current = false;
-    };
-  }, [conversationId]);
-
-  // Show working indicator on favicon (UI concern, not a notification)
-  useEffect(() => {
-    if (agentWorking) {
-      setFaviconStatus("working");
-    }
-  }, [agentWorking]);
-
-  const scrollStore = useMemo(() => {
-    const key = conversationId ? `shelley_scroll_${conversationId}` : null;
-    return {
-      save(scrollTop: number) {
-        if (key) localStorage.setItem(key, String(scrollTop));
-      },
-      load(): number | null {
-        if (!key) return null;
-        const v = localStorage.getItem(key);
-        return v != null ? Number(v) : null;
-      },
-    };
-  }, [conversationId]);
-
-  // Save scroll position to localStorage on page hide/unload
-  useEffect(() => {
-    const save = () => {
-      const container = messagesContainerRef.current;
-      if (!container || !conversationId) return;
-      scrollStore.save(container.scrollTop);
-    };
-    const onVisChange = () => {
-      if (document.visibilityState === "hidden") save();
-    };
-    document.addEventListener("visibilitychange", onVisChange);
-    window.addEventListener("beforeunload", save);
-    return () => {
-      document.removeEventListener("visibilitychange", onVisChange);
-      window.removeEventListener("beforeunload", save);
-    };
-  }, [conversationId]);
-
-  // Check scroll position, handle scroll-to-bottom button, and re-scroll on content resize
-  const scrollSaveTimerRef = useRef<number | null>(null);
-  useEffect(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return;
-
-    const handleScroll = () => {
-      const { scrollTop, scrollHeight, clientHeight } = container;
-      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100;
-      setShowScrollToBottom(!isNearBottom);
-      userScrolledRef.current = !isNearBottom;
-      // Debounced save — 100ms after scroll settles
-      if (scrollSaveTimerRef.current) clearTimeout(scrollSaveTimerRef.current);
-      scrollSaveTimerRef.current = window.setTimeout(() => {
-        if (!loadingRef.current) scrollStore.save(container.scrollTop);
-      }, 100);
-    };
-
-    container.addEventListener("scroll", handleScroll);
-
-    // Re-scroll to bottom when content expands (images loading, tool outputs rendering)
-    // but only if the user hasn't scrolled away.
-    let lastScrollHeight = container.scrollHeight;
-    const ro = new ResizeObserver(() => {
-      if (container.scrollHeight === lastScrollHeight) return;
-      lastScrollHeight = container.scrollHeight;
-      if (!userScrolledRef.current && !catchingUpRef.current) {
-        container.scrollTop = container.scrollHeight;
-      }
-    });
-    // .messages-list may not exist yet (loading spinner). Use MutationObserver
-    // to attach ResizeObserver when it appears.
-    const attachRO = () => {
-      const list = container.querySelector(".messages-list");
-      if (list) {
-        ro.observe(list);
-        return true;
-      }
-      return false;
-    };
-    let mo: MutationObserver | null = null;
-    if (!attachRO()) {
-      mo = new MutationObserver((_, self) => {
-        if (attachRO()) {
-          self.disconnect();
-          mo = null;
-        }
-      });
-      mo.observe(container, { childList: true, subtree: true });
-    }
-
-    return () => {
-      container.removeEventListener("scroll", handleScroll);
-      if (scrollSaveTimerRef.current) clearTimeout(scrollSaveTimerRef.current);
-      mo?.disconnect();
-      ro.disconnect();
-    };
-  }, [scrollStore]);
-
-  // Scroll after React commits the DOM, before the browser paints.
-  // Handles both initial load (pending scroll from loadMessages) and streaming updates.
-  useLayoutEffect(() => {
-    if (loading) return;
-    const pending = pendingScrollRef.current;
-    if (pending !== undefined) {
-      pendingScrollRef.current = undefined;
-      if (pending != null) {
-        const container = messagesContainerRef.current;
-        if (container) {
-          container.scrollTop = pending;
-          const isNearBottom = container.scrollHeight - pending - container.clientHeight < 100;
-          userScrolledRef.current = !isNearBottom;
-          setShowScrollToBottom(!isNearBottom);
-        }
-      } else {
-        scrollToBottom();
-      }
-      return;
-    }
-    if (!userScrolledRef.current && !catchingUpRef.current) {
-      scrollToBottom();
-    }
-  }, [messages, loading]);
 
   // Close overflow menu when clicking outside
   useEffect(() => {
@@ -1062,420 +675,13 @@ function ChatInterface({
     }
   }, [showOverflowMenu]);
 
-  // Check connection health - returns true if connection needs to be re-established
-  const checkConnectionHealth = useCallback(() => {
-    if (!conversationId) return false;
-
-    const es = eventSourceRef.current;
-    // No connection exists
-    if (!es) return true;
-    // EventSource.CLOSED = 2, EventSource.CONNECTING = 0
-    // If closed or errored, we need to reconnect
-    if (es.readyState === 2) return true;
-    // If still connecting after coming back, that's fine
-    return false;
-  }, [conversationId]);
-
-  // Track when the page was last hidden (for detecting stale connections on iOS Safari)
-  const hiddenAtRef = useRef<number | null>(null);
-
-  // Suppress auto-scroll during catch-up after returning from a backgrounded tab
-  const catchingUpRef = useRef(false);
-
-  const loadMessages = async () => {
-    if (!conversationId) return;
-
-    // Check cache first — if we have this conversation cached, restore instantly
-    const cached = conversationCache.get(conversationId);
-    if (cached) {
-      pendingScrollRef.current = scrollStore.load();
-      currentMessagesRef.current = cached.messages;
-      setMessages(cached.messages);
-      setLastKnownMessageCount(cached.messages.length);
-      messageCountStore.save(cached.messages.length);
-      setContextWindowSize(cached.contextWindowSize);
-      lastEventIdRef.current = cached.lastEventId;
-      loadingRef.current = false;
-      setLoading(false);
-      setShowLoadingProgressUI(false);
-      setLoadingProgress(null);
-      if (onConversationUpdate) {
-        onConversationUpdate(cached.conversation);
-      }
-      return;
-    }
-
-    try {
-      loadingRef.current = true;
-      setLoading(true);
-      setError(null);
-      setShowLoadingProgressUI(false);
-      if (loadingProgressDelayRef.current) {
-        clearTimeout(loadingProgressDelayRef.current);
-      }
-      loadingProgressDelayRef.current = window.setTimeout(() => {
-        setShowLoadingProgressUI(true);
-      }, 500);
-      setLastKnownMessageCount(messageCountStore.load());
-      setLoadingProgress({ phase: "downloading", bytesDownloaded: 0 });
-      const response = await api.getConversationWithProgress(conversationId, (progress) => {
-        setLoadingProgress(progress);
-      });
-      // Set pending scroll target before state updates so useLayoutEffect can handle it.
-      pendingScrollRef.current = scrollStore.load();
-      const loadedMessages = response.messages ?? [];
-      const mergedMessages = mergeMessagesPreserveOrder(loadedMessages, currentMessagesRef.current);
-      currentMessagesRef.current = mergedMessages;
-      setMessages(mergedMessages);
-      setLastKnownMessageCount(mergedMessages.length);
-      messageCountStore.save(mergedMessages.length);
-      loadingRef.current = false;
-      setLoading(false);
-      if (loadingProgressDelayRef.current) {
-        clearTimeout(loadingProgressDelayRef.current);
-        loadingProgressDelayRef.current = null;
-      }
-      setShowLoadingProgressUI(false);
-      setLoadingProgress(null);
-      // ConversationState is sent via the streaming endpoint, not on initial load
-      // Always update context window size when loading a conversation.
-      // If omitted from response (due to omitempty when 0), default to 0.
-      setContextWindowSize(response.context_window_size ?? 0);
-      if (response.runtime) {
-        setAgentWorking(response.runtime.working);
-        if (response.runtime.current_model_id) {
-          setSelectedModel(response.runtime.current_model_id);
-        }
-      }
-      if (onConversationUpdate) {
-        onConversationUpdate(response.conversation);
-      }
-      // Populate cache with the fetched data.
-      // Compute max sequence_id from loaded messages for SSE resume.
-      lastEventIdRef.current = response.last_event_id ?? 0;
-      conversationCache.set(conversationId, { ...response, messages: mergedMessages }, lastEventIdRef.current);
-    } catch (err) {
-      console.error("Failed to load messages:", err);
-      setError("Failed to load messages");
-      loadingRef.current = false;
-      setLoading(false);
-      if (loadingProgressDelayRef.current) {
-        clearTimeout(loadingProgressDelayRef.current);
-        loadingProgressDelayRef.current = null;
-      }
-      setShowLoadingProgressUI(false);
-      setLoadingProgress(null);
-    }
-  };
-
-  const setupMessageStream = useCallback(() => {
-    const resetHeartbeatTimeout = () => {
-      if (heartbeatTimeoutRef.current) {
-        clearTimeout(heartbeatTimeoutRef.current);
-      }
-      // If we don't receive any message (including heartbeat) within 60 seconds, reconnect
-      heartbeatTimeoutRef.current = window.setTimeout(() => {
-        console.warn("No heartbeat received in 60 seconds, reconnecting...");
-        if (eventSourceRef.current) {
-          eventSourceRef.current.close();
-          eventSourceRef.current = null;
-        }
-        setupMessageStream();
-      }, 60000);
-    };
-
-    if (!conversationId) return;
-
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-
-    // Clear any existing heartbeat timeout
-    if (heartbeatTimeoutRef.current) {
-      clearTimeout(heartbeatTimeoutRef.current);
-    }
-
-    const lastEventId = lastEventIdRef.current;
-    const eventSource = api.createMessageStream(conversationId, lastEventId > 0 ? lastEventId : undefined);
-    eventSourceRef.current = eventSource;
-
-    eventSource.onmessage = (event) => {
-      // Reset heartbeat timeout on every message
-      resetHeartbeatTimeout();
-
-      // Clear catch-up flag after the first message event (the catch-up batch)
-      // so that subsequent messages auto-scroll normally again.
-      catchingUpRef.current = false;
-
-      try {
-        const streamEvent: StreamEventEnvelope = JSON.parse(event.data);
-        const streamResponse = asStreamPayload(streamEvent);
-        const incomingMessages = Array.isArray(streamResponse.messages)
-          ? streamResponse.messages
-          : [];
-
-        if (typeof streamEvent.event_id === "number" && streamEvent.event_id > lastEventIdRef.current) {
-          lastEventIdRef.current = streamEvent.event_id;
-          if (conversationId) {
-            conversationCache.updateLastEventId(conversationId, streamEvent.event_id);
-          }
-        }
-
-        // Merge new messages without losing existing ones.
-        // If no new messages (e.g., only conversation/slug update or heartbeat), keep existing list.
-        if (incomingMessages.length > 0) {
-          // Clear streaming text when we get actual messages
-          streamingTextRef.current = "";
-          streamingThinkingRef.current = "";
-          if (streamingUpdateTimerRef.current) {
-            cancelAnimationFrame(streamingUpdateTimerRef.current);
-            streamingUpdateTimerRef.current = null;
-          }
-          setStreamingText("");
-          setStreamingThinking("");
-          setMessages((prev) => {
-            const mergedMessages = mergeMessagesPreserveOrder(prev, incomingMessages);
-            currentMessagesRef.current = mergedMessages;
-            return mergedMessages;
-          });
-          // Keep the cache in sync with streaming updates
-          if (conversationId) {
-            conversationCache.updateMessages(conversationId, incomingMessages);
-          }
-        }
-
-        // Update conversation data if provided
-        if (onConversationUpdate && streamResponse.conversation) {
-          onConversationUpdate(streamResponse.conversation);
-        }
-        // Keep cache conversation metadata in sync
-        if (conversationId && streamResponse.conversation) {
-          conversationCache.updateConversation(conversationId, streamResponse.conversation);
-        }
-
-        // Handle conversation list updates (for other conversations)
-        if (onConversationListUpdate && streamResponse.conversation_list_update) {
-          onConversationListUpdate(streamResponse.conversation_list_update);
-        }
-
-        // Handle conversation state updates (explicit from server)
-        if (streamResponse.conversation_state) {
-          // Update the conversations list with new working state
-          if (onConversationStateUpdate) {
-            onConversationStateUpdate(streamResponse.conversation_state);
-          }
-          // Update local state if this is for our conversation
-          if (streamResponse.conversation_state.conversation_id === conversationId) {
-            setAgentWorking(streamResponse.conversation_state.working);
-            // Update selected model from conversation (ensures consistency across sessions)
-            if (streamResponse.conversation_state.model) {
-              setSelectedModel(streamResponse.conversation_state.model);
-            }
-          }
-        }
-
-        // Dispatch notification events to registered handlers
-        if (streamResponse.notification_event) {
-          handleNotificationEvent(streamResponse.notification_event);
-        }
-
-        if (typeof streamResponse.context_window_size === "number") {
-          setContextWindowSize(streamResponse.context_window_size);
-          // Keep cache in sync
-          if (conversationId) {
-            conversationCache.updateContextWindowSize(
-              conversationId,
-              streamResponse.context_window_size,
-            );
-          }
-        }
-
-        // Handle streaming text deltas
-        if (streamResponse.streaming_text !== undefined) {
-          streamingTextRef.current += streamResponse.streaming_text;
-          if (!streamingUpdateTimerRef.current) {
-            streamingUpdateTimerRef.current = requestAnimationFrame(() => {
-              setStreamingText(streamingTextRef.current);
-              streamingUpdateTimerRef.current = null;
-            });
-          }
-        }
-
-        // Handle streaming thinking/reasoning deltas
-        if (streamResponse.streaming_thinking !== undefined) {
-          streamingThinkingRef.current += streamResponse.streaming_thinking;
-          if (!streamingUpdateTimerRef.current) {
-            streamingUpdateTimerRef.current = requestAnimationFrame(() => {
-              setStreamingThinking(streamingThinkingRef.current);
-              streamingUpdateTimerRef.current = null;
-            });
-          }
-        }
-      } catch (err) {
-        console.error("Failed to parse message stream data:", err);
-      }
-    };
-
-    eventSource.onerror = (event) => {
-      console.warn("Message stream error (will retry):", event);
-      // Close and retry after a delay
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-      }
-
-      // Clear heartbeat timeout on error
-      if (heartbeatTimeoutRef.current) {
-        clearTimeout(heartbeatTimeoutRef.current);
-        heartbeatTimeoutRef.current = null;
-      }
-
-      // Backoff delays: 1s, 2s, 5s, then show disconnected but keep retrying periodically
-      const delays = [1000, 2000, 5000];
-
-      setReconnectAttempts((prev) => {
-        const attempts = prev + 1;
-
-        if (attempts > delays.length) {
-          // Show disconnected UI but start periodic retry every 30 seconds
-          setIsReconnecting(false);
-          setIsDisconnected(true);
-          if (!periodicRetryRef.current) {
-            periodicRetryRef.current = window.setInterval(() => {
-              if (eventSourceRef.current === null) {
-                console.log("Periodic reconnect attempt");
-                setupMessageStream();
-              }
-            }, 30000);
-          }
-          return attempts;
-        }
-
-        // Show reconnecting indicator during backoff attempts
-        setIsReconnecting(true);
-        const delay = delays[attempts - 1];
-        console.log(`Reconnecting in ${delay}ms (attempt ${attempts}/${delays.length})`);
-
-        reconnectTimeoutRef.current = window.setTimeout(() => {
-          if (eventSourceRef.current === null) {
-            setupMessageStream();
-          }
-        }, delay);
-
-        return attempts;
-      });
-    };
-
-    eventSource.onopen = () => {
-      console.log("Message stream connected");
-      // Refresh conversations list on reconnect (may have missed updates while disconnected)
-      if (hasConnectedRef.current) {
-        onReconnect?.();
-      }
-      hasConnectedRef.current = true;
-      // Reset reconnect attempts and clear periodic retry on successful connection
-      setReconnectAttempts(0);
-      setIsDisconnected(false);
-      setIsReconnecting(false);
-      if (periodicRetryRef.current) {
-        clearInterval(periodicRetryRef.current);
-        periodicRetryRef.current = null;
-      }
-      // Start heartbeat timeout monitoring
-      resetHeartbeatTimeout();
-    };
-  }, [conversationId, onConversationUpdate, onConversationListUpdate, onConversationStateUpdate]);
-
-  // Force-reconnect: close existing connection and reconnect to get missed messages
-  const forceReconnect = useCallback(() => {
-    if (!conversationId) return;
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-      eventSourceRef.current = null;
-    }
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    if (periodicRetryRef.current) {
-      clearInterval(periodicRetryRef.current);
-      periodicRetryRef.current = null;
-    }
-    setIsDisconnected(false);
-    setIsReconnecting(false);
-    setReconnectAttempts(0);
-    setupMessageStream();
-  }, [conversationId, setupMessageStream]);
-
-  // Reconnect only if connection is dead
-  const reconnect = useCallback(() => {
-    if (!eventSourceRef.current || eventSourceRef.current.readyState === 2) {
-      forceReconnect();
-    }
-  }, [forceReconnect]);
-
-  // Reconnect when page becomes visible, focused, or online
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        hiddenAtRef.current = Date.now();
-        return;
-      }
-      // Page became visible
-      const hiddenFor = hiddenAtRef.current ? Date.now() - hiddenAtRef.current : 0;
-      hiddenAtRef.current = null;
-
-      if (checkConnectionHealth()) {
-        // Connection is already known-dead
-        console.log("Tab visible: connection unhealthy, reconnecting");
-        catchingUpRef.current = true;
-        reconnect();
-      } else if (hiddenFor > 5000) {
-        // On iOS Safari, backgrounded tabs have their TCP connections killed
-        // but EventSource.readyState may still show OPEN. Force reconnect
-        // to pick up any missed messages from the server.
-        console.log(
-          `Tab visible after ${Math.round(hiddenFor / 1000)}s hidden, force reconnecting`,
-        );
-        catchingUpRef.current = true;
-        forceReconnect();
-      }
-    };
-
-    const handleFocus = () => {
-      if (checkConnectionHealth()) {
-        console.log("Window focus: connection unhealthy, reconnecting");
-        reconnect();
-      }
-    };
-
-    const handleOnline = () => {
-      if (checkConnectionHealth()) {
-        console.log("Online: connection unhealthy, reconnecting");
-        reconnect();
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("focus", handleFocus);
-    window.addEventListener("online", handleOnline);
-
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("focus", handleFocus);
-      window.removeEventListener("online", handleOnline);
-    };
-  }, [checkConnectionHealth, reconnect, forceReconnect]);
-
   const sendMessage = async (message: string) => {
     if (!message.trim() || sending) return;
 
-    // Check if this is a shell command (starts with "!")
     const trimmedMessage = message.trim();
     if (trimmedMessage.startsWith("!")) {
       const shellCommand = trimmedMessage.slice(1).trim();
       if (shellCommand) {
-        // Create an ephemeral terminal
         const terminal: EphemeralTerminal = {
           id: `term-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
           command: shellCommand,
@@ -1484,58 +690,18 @@ function ChatInterface({
           createdAt: new Date(),
         };
         setEphemeralTerminals((prev) => [...prev, terminal]);
-        // Auto-focus interactive shells
         const firstWord = shellCommand.split(/\s+/)[0];
         const baseName = firstWord.split("/").pop() || firstWord;
         const interactiveShells = ["bash", "sh", "zsh", "fish", "nu", "nushell"];
         if (interactiveShells.includes(baseName)) {
           setTerminalAutoFocusId(terminal.id);
         }
-        // Scroll to bottom to show the new terminal
         setTimeout(() => scrollToBottom(), 100);
       }
       return;
     }
 
-    try {
-      setSending(true);
-      setError(null);
-      setAgentWorking(true);
-
-      // If no conversation ID, this is the first message - validate cwd first
-      if (!conversationId && onFirstMessage) {
-        // Validate cwd if provided
-        if (selectedCwd) {
-          const validation = await api.validateCwd(selectedCwd);
-          if (!validation.valid) {
-            throw new Error(`Invalid working directory: ${validation.error}`);
-          }
-        }
-        await onFirstMessage(message.trim(), selectedModel, selectedCwd || undefined);
-      } else if (conversationId) {
-        await api.sendMessage(conversationId, {
-          message: message.trim(),
-          model: selectedModel,
-        });
-      }
-    } catch (err) {
-      console.error("Failed to send message:", err);
-      const message = err instanceof Error ? err.message : "Unknown error";
-      setError(message);
-      setAgentWorking(false);
-      throw err; // Re-throw so MessageInput can preserve the text
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const scrollToBottom = () => {
-    const container = messagesContainerRef.current;
-    if (container) {
-      container.scrollTop = container.scrollHeight;
-    }
-    userScrolledRef.current = false;
-    setShowScrollToBottom(false);
+    await sendConversationMessage(message);
   };
 
   // Callback for terminals to insert text into the message input
@@ -1550,20 +716,7 @@ function ChatInterface({
     }
   }, [openDiffViewerTrigger]);
 
-  const handleCancel = async () => {
-    if (!conversationId || cancelling) return;
-
-    try {
-      setCancelling(true);
-      await api.cancelConversation(conversationId);
-      setAgentWorking(false);
-    } catch (err) {
-      console.error("Failed to cancel conversation:", err);
-      setError("Failed to cancel. Please try again.");
-    } finally {
-      setCancelling(false);
-    }
-  };
+  const handleCancel = cancelConversation;
 
   // Handler to distill and continue conversation
   const handleDistillConversation = async () => {

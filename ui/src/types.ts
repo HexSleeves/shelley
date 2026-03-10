@@ -2,6 +2,7 @@
 import {
   Conversation as GeneratedConversation,
   ConversationRuntime as GeneratedConversationRuntime,
+  ConversationStateForTS,
   ConversationWithStateForTS,
   ApiMessageForTS,
   StreamResponseForTS,
@@ -15,6 +16,7 @@ import {
 // Re-export generated types
 export type Conversation = GeneratedConversation;
 export type ConversationRuntime = GeneratedConversationRuntime;
+export type ConversationState = ConversationStateForTS;
 export type ConversationWithState = ConversationWithStateForTS;
 export type JobRun = GeneratedJobRun;
 export type Usage = GeneratedUsage;
