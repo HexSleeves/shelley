@@ -5,13 +5,13 @@ It is intentionally limited to explicit gaps, known issues, and source-level TOD
 
 ## High Priority
 
-- [ ] Remove the placeholder briefing text from `server/distill.go`'s `distillSystemPrompt`.
+- [x] Remove the placeholder briefing text from `server/distill.go`'s `distillSystemPrompt`.
   The prompt still literally says `WRITE 2-6 SENTENCES HERE...`; replace that with the final instruction wording only.
 
-- [ ] Eliminate the React `act(...)` warnings from the hook tests in `ui/src/test/hookTestUtils.tsx`.
+- [x] Eliminate the React `act(...)` warnings from the hook tests in `ui/src/test/hookTestUtils.tsx`.
   The current lightweight harness passes, but async state updates are still escaping the helper.
 
-- [ ] Add direct tests for the new stream/snapshot hooks.
+- [x] Add direct tests for the new stream/snapshot hooks.
   `useConversationSnapshot.ts`, `useConversationStream.ts`, and `useConversationSession.ts` now own most transport/state behavior, but only the composer/actions/coalescing hooks have focused tests.
 
 ## Frontend Follow-Up After Phase 4
