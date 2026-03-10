@@ -120,10 +120,17 @@ export function runTests(): TestResult {
     assert(result!.length === 2, `should have 2 messages, got ${result!.length}`);
     assert(result![0].message_id === "m1", "first message preserved");
     assert(result![1].message_id === "m2", "second message appended");
+  });
 
-    // lastEventId should be updated
+  test("updateLastEventId stores newer event ids only", () => {
+    const cache = new ConversationCache(5);
+    cache.set("conv1", makeResponse("conv1", []), 1);
+
+    cache.updateLastEventId("conv1", 2);
+    cache.updateLastEventId("conv1", 1);
+
     const cached = cache.get("conv1");
-    assert(cached!.lastEventId === 2, "lastEventId should be updated to 2");
+    assert(cached!.lastEventId === 2, "should keep the highest event id");
   });
 
   test("updateMessages updates existing messages in place", () => {
