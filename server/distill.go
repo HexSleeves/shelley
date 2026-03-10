@@ -29,7 +29,7 @@ Produce exactly this structure (no markdown code fences around the whole output,
 
 This is a continuation of conversation "SLUG_HERE".
 
-WRITE 2-6 SENTENCES HERE describing what was being worked on, what state things are in, and what the immediate next steps or open tasks are. Be concrete — name files, describe the current approach, note where things left off. This is a situational briefing, not a history. Write the sentences directly with no wrapper tags.
+Write 2-6 concrete situational-briefing sentences describing what was being worked on, what state things are in, and what the immediate next steps or open tasks are. Name files, describe the current approach, and note exactly where work stopped. This is a situational briefing, not a history. Write the sentences directly with no wrapper tags.
 
 ## Retained Facts
 

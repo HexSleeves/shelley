@@ -1,6 +1,6 @@
 import { api } from "../services/api";
 import { useConversationActions } from "./useConversationActions";
-import { assert, renderHook, setupDom, TestResult } from "../test/hookTestUtils";
+import { assert, renderHook, runWithAct, setupDom, TestResult } from "../test/hookTestUtils";
 
 interface TestCase {
   name: string;
@@ -34,7 +34,7 @@ export async function runTests(): Promise<TestResult> {
       setError: () => {},
     });
 
-    await hook.getResult().sendConversationMessage("hello");
+    await runWithAct(() => hook.getResult().sendConversationMessage("hello"));
     assert(firstMessageArgs !== null, "should invoke onFirstMessage");
     assert(firstMessageArgs?.[0] === "hello", "should pass trimmed message");
     assert(firstMessageArgs?.[1] === "model-a", "should pass selected model");
@@ -57,7 +57,7 @@ export async function runTests(): Promise<TestResult> {
       setError: () => {},
     });
 
-    await hook.getResult().sendConversationMessage("hello");
+    await runWithAct(() => hook.getResult().sendConversationMessage("hello"));
     assert(sentArgs !== null, "should call api.sendMessage");
     if (sentArgs === null) {
       throw new Error("sendMessage args missing");
@@ -83,8 +83,42 @@ export async function runTests(): Promise<TestResult> {
       setError: () => {},
     });
 
-    await hook.getResult().cancelConversation();
+    await runWithAct(() => hook.getResult().cancelConversation());
     assert(cancelledConversationId === "conv-2", "should cancel the active conversation");
+    hook.unmount();
+  });
+
+  test("blocks overlapping sends before React state updates land", async () => {
+    let sentCount = 0;
+    let unblockSend!: () => void;
+    const sendFinished = new Promise<void>((resolve) => {
+      unblockSend = resolve;
+    });
+    api.sendMessage = async () => {
+      sentCount += 1;
+      await sendFinished;
+    };
+
+    const hook = renderHook(useConversationActions, {
+      conversationId: "conv-3",
+      selectedModel: "model-a",
+      selectedCwd: "",
+      onFirstMessage: undefined,
+      setAgentWorking: () => {},
+      setError: () => {},
+    });
+
+    let firstSend!: Promise<void>;
+    let secondSend!: Promise<void>;
+    await runWithAct(() => {
+      firstSend = hook.getResult().sendConversationMessage("hello");
+      secondSend = hook.getResult().sendConversationMessage("hello again");
+    });
+
+    assert(sentCount === 1, "should ignore overlapping sends while one is already in flight");
+    unblockSend();
+    await runWithAct(() => firstSend);
+    await runWithAct(() => secondSend);
     hook.unmount();
   });
 

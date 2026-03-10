@@ -68,12 +68,15 @@ export function setupDom(url = "http://localhost/"): () => void {
   Object.defineProperty(globalThis, "requestAnimationFrame", {
     configurable: true,
     writable: true,
-    value: (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0),
+    value: (callback: FrameRequestCallback) => {
+      callback(0);
+      return 0;
+    },
   });
   Object.defineProperty(globalThis, "cancelAnimationFrame", {
     configurable: true,
     writable: true,
-    value: (id: number) => window.clearTimeout(id),
+    value: () => {},
   });
 
   if (!globalThis.ResizeObserver) {
@@ -152,9 +155,20 @@ export function setupDom(url = "http://localhost/"): () => void {
 }
 
 export async function flushEffects(): Promise<void> {
+  await runWithAct(() => Promise.resolve());
+}
+
+export async function runWithAct<T>(fn: () => Promise<T> | T): Promise<T> {
+  let settled = false;
+  let result!: T;
   await act(async () => {
-    await Promise.resolve();
+    result = await fn();
+    settled = true;
   });
+  if (!settled) {
+    throw new Error("Act callback did not settle");
+  }
+  return result;
 }
 
 export function renderHook<T, P extends object>(

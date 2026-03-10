@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { api } from "../services/api";
 
 interface UseConversationActionsArgs {
@@ -27,12 +27,16 @@ export function useConversationActions({
 }: UseConversationActionsArgs): UseConversationActionsResult {
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const sendingRef = useRef(false);
+  const cancellingRef = useRef(false);
 
   const sendConversationMessage = useCallback(
     async (message: string) => {
-      if (!message.trim() || sending) return;
+      const trimmedMessage = message.trim();
+      if (!trimmedMessage || sendingRef.current) return;
 
       try {
+        sendingRef.current = true;
         setSending(true);
         setError(null);
         setAgentWorking(true);
@@ -44,13 +48,13 @@ export function useConversationActions({
               throw new Error(`Invalid working directory: ${validation.error}`);
             }
           }
-          await onFirstMessage(message.trim(), selectedModel, selectedCwd || undefined);
+          await onFirstMessage(trimmedMessage, selectedModel, selectedCwd || undefined);
           return;
         }
 
         if (conversationId) {
           await api.sendMessage(conversationId, {
-            message: message.trim(),
+            message: trimmedMessage,
             model: selectedModel,
           });
         }
@@ -60,16 +64,18 @@ export function useConversationActions({
         setAgentWorking(false);
         throw err;
       } finally {
+        sendingRef.current = false;
         setSending(false);
       }
     },
-    [conversationId, onFirstMessage, selectedCwd, selectedModel, sending, setAgentWorking, setError],
+    [conversationId, onFirstMessage, selectedCwd, selectedModel, setAgentWorking, setError],
   );
 
   const cancelConversation = useCallback(async () => {
-    if (!conversationId || cancelling) return;
+    if (!conversationId || cancellingRef.current) return;
 
     try {
+      cancellingRef.current = true;
       setCancelling(true);
       await api.cancelConversation(conversationId);
       setAgentWorking(false);
@@ -77,9 +83,10 @@ export function useConversationActions({
       console.error("Failed to cancel conversation:", err);
       setError("Failed to cancel. Please try again.");
     } finally {
+      cancellingRef.current = false;
       setCancelling(false);
     }
-  }, [cancelling, conversationId, setAgentWorking, setError]);
+  }, [conversationId, setAgentWorking, setError]);
 
   return {
     sending,
