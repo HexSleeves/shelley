@@ -16,8 +16,8 @@ It is intentionally limited to explicit gaps, known issues, and source-level TOD
 
 ## Frontend Follow-Up After Phase 4
 
-- [ ] Decide whether `ui/src/hooks/useConversationSession.ts` should remain as a composition wrapper or disappear entirely.
-  It is thinner now, but it still coordinates snapshot loading, stream lifecycle, and actions.
+- [x] Remove `ui/src/hooks/useConversationSession.ts` and compose the session hooks directly in `ChatInterface`.
+  The wrapper is gone; `ChatInterface` now wires snapshot loading, stream lifecycle, and actions directly.
 
 - [ ] Verify the extracted stream hooks against a live browser session.
   The reconnect spam is fixed in code, but the intended manual follow-up is a real `make serve` session to confirm stable SSE behavior, reconnects, and resume behavior.

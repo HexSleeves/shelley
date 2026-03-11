@@ -1,7 +1,6 @@
 import { runTests as runCoalescedMessagesTests } from "./useCoalescedMessages.test";
 import { runTests as runComposerPreferencesTests } from "./useComposerPreferences.test";
 import { runTests as runConversationActionsTests } from "./useConversationActions.test";
-import { runTests as runConversationSessionTests } from "./useConversationSession.test";
 import { runTests as runConversationSnapshotTests } from "./useConversationSnapshot.test";
 import { runTests as runConversationStreamTests } from "./useConversationStream.test";
 import { setupDom } from "../test/hookTestUtils";
@@ -15,7 +14,6 @@ async function main() {
       ["useConversationActions", await runConversationActionsTests()],
       ["useConversationSnapshot", await runConversationSnapshotTests()],
       ["useConversationStream", await runConversationStreamTests()],
-      ["useConversationSession", await runConversationSessionTests()],
     ] as const;
 
     let failed = false;

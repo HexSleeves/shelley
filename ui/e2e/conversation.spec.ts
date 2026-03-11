@@ -14,6 +14,7 @@ test.describe('Shelley Conversation Tests', () => {
     
     // Find and click the send button using improved selector
     const sendButton = page.getByTestId('send-button');
+    const thinkingIndicator = page.getByTestId('agent-thinking');
     await expect(sendButton).toBeVisible();
     await sendButton.click();
     
@@ -438,10 +439,12 @@ test.describe('Shelley Conversation Tests', () => {
     await expect(messageInput).toBeVisible({ timeout: 30000 });
     
     const sendButton = page.getByTestId('send-button');
+    const thinkingIndicator = page.getByTestId('agent-thinking');
     
     // Send a message that triggers an error in the predictable LLM
     await messageInput.fill('error: test error message');
     await sendButton.click();
+    await expect(thinkingIndicator).toBeVisible({ timeout: 5000 });
     
     // Wait for the error message to appear in the UI
     await page.waitForFunction(
@@ -462,4 +465,5 @@ test.describe('Shelley Conversation Tests', () => {
     
     // Verify error label is shown in the message header
     await expect(page.locator('[role="alert"]').locator('text=Error')).toBeVisible();
+    await expect(thinkingIndicator).toBeHidden({ timeout: 10000 });
   });

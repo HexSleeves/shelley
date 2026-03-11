@@ -7,6 +7,7 @@ import {
   isDistillStatusMessage,
 } from "../types";
 import { api } from "../services/api";
+import { setFaviconStatus } from "../services/favicon";
 import { ThemeMode, getStoredTheme } from "../services/theme";
 import { useMarkdown } from "../contexts/MarkdownContext";
 import { useI18n } from "../i18n";
@@ -22,7 +23,9 @@ import TerminalPanel, { EphemeralTerminal } from "./TerminalPanel";
 import SystemPromptView from "./SystemPromptView";
 import { renderToolCall, formatExecutionTime } from "./toolRendering";
 import { useComposerPreferences } from "../hooks/useComposerPreferences";
-import { useConversationSession } from "../hooks/useConversationSession";
+import { useConversationActions } from "../hooks/useConversationActions";
+import { useConversationSnapshot } from "../hooks/useConversationSnapshot";
+import { useConversationStream } from "../hooks/useConversationStream";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useCoalescedMessages } from "../hooks/useCoalescedMessages";
 import ChatStatusContent from "./ChatStatusContent";
@@ -268,38 +271,58 @@ function ChatInterface({
     mostRecentCwd,
     modelsRefreshTrigger,
   });
+  const [error, setError] = useState<string | null>(null);
   const {
     messages,
     loading,
     showLoadingProgressUI,
     loadingProgress,
     lastKnownMessageCount,
-    sending,
-    cancelling,
-    error,
-    setError,
     agentWorking,
     contextWindowSize,
+    lastEventIdRef,
+    setAgentWorking,
+    loadMessages,
+    resetSnapshot,
+    persistLastEventId,
+    applyIncomingMessages,
+    applyConversationUpdate,
+    applyContextWindowSize,
+  } = useConversationSnapshot({
+    conversationId,
+    onConversationUpdate,
+    onSelectedModelChange: setSelectedModel,
+  });
+  const {
     reconnectAttempts,
     isDisconnected,
     isReconnecting,
     pauseAutoScroll,
     streamingText,
     streamingThinking,
-    sendConversationMessage,
-    cancelConversation,
     reconnect,
-  } = useConversationSession({
+    resetStreamState,
+  } = useConversationStream({
     conversationId,
-    selectedModel,
-    selectedCwd,
-    onConversationUpdate,
+    lastEventIdRef,
+    setAgentWorking,
+    onSelectedModelChange: setSelectedModel,
+    applyIncomingMessages,
+    applyConversationUpdate,
+    applyContextWindowSize,
     onConversationListUpdate,
     onConversationStateUpdate,
-    onFirstMessage,
     onReconnect,
-    onSelectedModelChange: setSelectedModel,
   });
+  const { sending, cancelling, sendConversationMessage, cancelConversation } =
+    useConversationActions({
+      conversationId,
+      selectedModel,
+      selectedCwd,
+      onFirstMessage,
+      setAgentWorking,
+      setError,
+    });
   const { messagesContainerRef, showScrollToBottom, scrollToBottom } = useMessageScroll({
     conversationId,
     messages,
@@ -334,6 +357,29 @@ function ChatInterface({
   const { hasUpdate, openModal: openVersionModal, VersionModal } = useVersionChecker();
   const [terminalInjectedText, setTerminalInjectedText] = useState<string | null>(null);
   const [terminalAutoFocusId, setTerminalAutoFocusId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (conversationId) {
+      setError(null);
+      loadMessages().catch(() => {
+        setError("Failed to load messages");
+      });
+    } else {
+      resetSnapshot();
+      resetStreamState();
+      setError(null);
+    }
+
+    return () => {
+      persistLastEventId();
+    };
+  }, [conversationId, loadMessages, persistLastEventId, resetSnapshot, resetStreamState]);
+
+  useEffect(() => {
+    if (agentWorking) {
+      setFaviconStatus("working");
+    }
+  }, [agentWorking]);
 
   const handleOpenDiffViewer = useCallback((commit: string, cwd?: string) => {
     setDiffViewerInitialCommit(commit);
