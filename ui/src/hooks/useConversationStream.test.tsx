@@ -103,6 +103,49 @@ export async function runTests(): Promise<TestResult> {
     hook.unmount();
   });
 
+  test("clears working when an error message arrives even if stream state is stale", async () => {
+    const lastEventIdRef = { current: 0 };
+    const workingStates: boolean[] = [];
+
+    api.createMessageStream = () => new MockEventSource("/stream") as unknown as EventSource;
+
+    const hook = renderHook(useConversationStream, {
+      conversationId: "conv-error",
+      lastEventIdRef,
+      setAgentWorking: (working) => {
+        workingStates.push(working);
+      },
+      onSelectedModelChange: undefined,
+      applyIncomingMessages: () => {},
+      applyConversationUpdate: () => {},
+      applyContextWindowSize: () => {},
+      onConversationListUpdate: undefined,
+      onConversationStateUpdate: undefined,
+      onReconnect: undefined,
+    });
+
+    const source = MockEventSource.instances[0];
+    await runWithAct(() => {
+      source.emitMessage({
+        version: 1,
+        event_id: 1,
+        conversation_id: "conv-error",
+        type: "message",
+        created_at: "2026-03-10T12:00:00.000Z",
+        payload: {
+          messages: [makeTextMessage("m-error", "conv-error", "error", "LLM request failed")],
+          conversation_state: {
+            conversation_id: "conv-error",
+            working: true,
+          },
+        },
+      });
+    });
+
+    assert(workingStates.at(-1) === false, "should clear working from terminal error messages");
+    hook.unmount();
+  });
+
   test("marks the stream disconnected after repeated errors and can reconnect", async () => {
     const lastEventIdRef = { current: 3 };
     let reconnects = 0;

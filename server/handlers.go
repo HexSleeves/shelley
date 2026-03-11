@@ -773,6 +773,7 @@ func (s *Server) handleChatConversation(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	req.Message = strings.TrimSpace(req.Message)
 	if req.Message == "" {
 		http.Error(w, "Message is required", http.StatusBadRequest)
 		return
@@ -911,6 +912,7 @@ func (s *Server) handleNewConversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.Message = strings.TrimSpace(req.Message)
 	if req.Message == "" {
 		http.Error(w, "Message is required", http.StatusBadRequest)
 		return

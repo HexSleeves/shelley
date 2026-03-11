@@ -388,32 +388,32 @@ function ChatInterface({
   }, []);
 
   const sendMessage = async (message: string) => {
-    if (!message.trim() || sending) return;
-
     const trimmedMessage = message.trim();
+    if (!trimmedMessage) return;
+
     if (trimmedMessage.startsWith("!")) {
       const shellCommand = trimmedMessage.slice(1).trim();
-      if (shellCommand) {
-        const terminal: EphemeralTerminal = {
-          id: `term-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-          command: shellCommand,
-          cwd:
-            currentConversation?.cwd || selectedCwd || window.__SHELLEY_INIT__?.default_cwd || "/",
-          createdAt: new Date(),
-        };
-        setEphemeralTerminals((prev) => [...prev, terminal]);
-        const firstWord = shellCommand.split(/\s+/)[0];
-        const baseName = firstWord.split("/").pop() || firstWord;
-        const interactiveShells = ["bash", "sh", "zsh", "fish", "nu", "nushell"];
-        if (interactiveShells.includes(baseName)) {
-          setTerminalAutoFocusId(terminal.id);
-        }
-        setTimeout(() => scrollToBottom(), 100);
+      if (!shellCommand) return;
+
+      const terminal: EphemeralTerminal = {
+        id: `term-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        command: shellCommand,
+        cwd:
+          currentConversation?.cwd || selectedCwd || window.__SHELLEY_INIT__?.default_cwd || "/",
+        createdAt: new Date(),
+      };
+      setEphemeralTerminals((prev) => [...prev, terminal]);
+      const firstWord = shellCommand.split(/\s+/)[0];
+      const baseName = firstWord.split("/").pop() || firstWord;
+      const interactiveShells = ["bash", "sh", "zsh", "fish", "nu", "nushell"];
+      if (interactiveShells.includes(baseName)) {
+        setTerminalAutoFocusId(terminal.id);
       }
+      requestAnimationFrame(scrollToBottom);
       return;
     }
 
-    await sendConversationMessage(message);
+    await sendConversationMessage(trimmedMessage);
   };
 
   // Callback for terminals to insert text into the message input
@@ -595,7 +595,7 @@ function ChatInterface({
         <div className="header-left">
           <button
             onClick={onOpenDrawer}
-            className="btn-icon hide-on-desktop"
+            className="btn-icon header-menu-button hide-on-desktop"
             aria-label={t("openConversations")}
           >
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">

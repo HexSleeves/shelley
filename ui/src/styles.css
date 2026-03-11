@@ -430,6 +430,10 @@ button {
   flex-shrink: 0; /* Never shrink the actions */
 }
 
+.header-menu-button {
+  flex: 0 0 auto;
+}
+
 /* Drawer/Sidebar */
 .drawer {
   position: fixed;
@@ -459,13 +463,20 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
   padding: 1rem;
+  padding-right: max(1rem, env(safe-area-inset-right));
 }
 
 .drawer-header-actions {
   display: flex;
   align-items: center;
   gap: 0.25rem;
+  flex: 0 0 auto;
+}
+
+.drawer-header-button {
+  flex: 0 0 auto;
 }
 
 .drawer-title {
@@ -3550,6 +3561,37 @@ svg {
   .header {
     padding: 0.375rem 0.75rem;
     padding-top: calc(0.375rem + env(safe-area-inset-top, 0px));
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+  }
+
+  .header-left {
+    gap: 0.5rem;
+  }
+
+  .header-actions {
+    gap: 0.375rem;
+  }
+
+  .btn-new,
+  .header-menu-button,
+  .drawer-header-button {
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+  }
+
+  .drawer {
+    max-width: min(20rem, calc(100vw - max(1rem, env(safe-area-inset-left)) - max(1rem, env(safe-area-inset-right))));
+  }
+
+  .drawer-header {
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+    padding-right: max(0.75rem, env(safe-area-inset-right));
+  }
+
+  .drawer-footer {
+    padding-left: max(0.75rem, env(safe-area-inset-left));
+    padding-right: max(0.75rem, env(safe-area-inset-right));
   }
 
   /* Hide standalone status bar on mobile — content is shown inline in controls row.

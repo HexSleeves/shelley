@@ -761,7 +761,7 @@ function ConversationDrawer({
             {!showArchived && (
               <button
                 onClick={onNewConversation}
-                className="btn-icon hide-on-desktop"
+                className="btn-icon drawer-header-button hide-on-desktop"
                 aria-label={t("newConversation")}
               >
                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -776,7 +776,7 @@ function ConversationDrawer({
             )}
             <button
               onClick={onClose}
-              className="btn-icon hide-on-desktop"
+              className="btn-icon drawer-header-button hide-on-desktop"
               aria-label={t("closeConversations")}
             >
               <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">

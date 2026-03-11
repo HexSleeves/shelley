@@ -11,6 +11,15 @@ function asStreamPayload(event: StreamEventEnvelope): StreamResponse {
   return event.payload as StreamResponse;
 }
 
+function shouldClearWorkingFromMessages(messages: Message[]): boolean {
+  return messages.some((message) => {
+    if ((message.type === "agent" || message.type === "error") && message.end_of_turn) {
+      return true;
+    }
+    return message.type === "error";
+  });
+}
+
 interface UseConversationStreamArgs {
   conversationId: string | null;
   lastEventIdRef: MutableRefObject<number>;
@@ -158,7 +167,14 @@ export function useConversationStream({
         if (streamResponse.conversation_state) {
           onConversationStateUpdateRef.current?.(streamResponse.conversation_state);
           if (streamResponse.conversation_state.conversation_id === conversationId) {
-            setAgentWorking(streamResponse.conversation_state.working);
+            if (
+              streamResponse.conversation_state.working === false ||
+              shouldClearWorkingFromMessages(incomingMessages)
+            ) {
+              setAgentWorking(false);
+            } else {
+              setAgentWorking(true);
+            }
             if (streamResponse.conversation_state.model) {
               onSelectedModelChangeRef.current?.(streamResponse.conversation_state.model);
             }

@@ -454,3 +454,37 @@ func TestHandleWriteFile(t *testing.T) {
 		t.Errorf("Expected status code %d, got %d", http.StatusForbidden, w.Code)
 	}
 }
+
+func TestHandleChatConversationRejectsWhitespaceOnlyMessage(t *testing.T) {
+	h := NewTestHarness(t)
+	ctx := context.Background()
+	conv, err := h.db.CreateConversation(ctx, nil, true, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to create conversation: %v", err)
+	}
+
+	body := bytes.NewBufferString(`{"message":"   \n\t  ","model":"predictable"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/conversation/"+conv.ConversationID+"/chat", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.server.handleChatConversation(w, req, conv.ConversationID)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, w.Code, w.Body.String())
+	}
+}
+
+func TestHandleNewConversationRejectsWhitespaceOnlyMessage(t *testing.T) {
+	h := NewTestHarness(t)
+	body := bytes.NewBufferString(`{"message":"   \n\t  ","model":"predictable"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/conversations/new", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.server.handleNewConversation(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, w.Code, w.Body.String())
+	}
+}

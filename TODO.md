@@ -19,21 +19,21 @@ It is intentionally limited to explicit gaps, known issues, and source-level TOD
 - [x] Remove `ui/src/hooks/useConversationSession.ts` and compose the session hooks directly in `ChatInterface`.
   The wrapper is gone; `ChatInterface` now wires snapshot loading, stream lifecycle, and actions directly.
 
-- [ ] Verify the extracted stream hooks against a live browser session.
-  The reconnect spam is fixed in code, but the intended manual follow-up is a real `make serve` session to confirm stable SSE behavior, reconnects, and resume behavior.
+- [x] Verify the extracted stream hooks against a live browser session.
+  Confirmed in a live predictable-model browser session: SSE reconnect warnings can occur during reload, but stream resume and post-reload completion behaved correctly and the UI recovered to the completed state.
 
 - [ ] Consider replacing the custom hook runner with a real React test stack.
   The current `tsx` + `jsdom` harness is small, but it is already carrying React-specific act/environment setup by hand.
 
 ## Known Product Issues From `AGENT_TESTING.md`
 
-- [ ] Re-check the rapid sequential message bug that can produce `400` errors for empty content.
+- [x] Re-check the rapid sequential message bug that can produce `400` errors for empty content.
 
 - [ ] Re-check cancelled-operation reload behavior so cancelled turns render explicit cancelled state after refresh.
 
-- [ ] Re-check that the "Agent working..." indicator clears on LLM errors.
+- [x] Re-check that the "Agent working..." indicator clears on LLM errors.
 
-- [ ] Re-check mobile drawer/menu viewport behavior.
+- [x] Re-check mobile drawer/menu viewport behavior.
 
 - [ ] Keep the React-compatible textarea setter requirement documented anywhere browser automation is added.
 

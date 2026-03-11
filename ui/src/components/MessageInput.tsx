@@ -80,6 +80,7 @@ function MessageInput({
     return "";
   });
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const [uploadsInProgress, setUploadsInProgress] = useState(0);
   const [dragCounter, setDragCounter] = useState(0);
   const [isListening, setIsListening] = useState(false);
@@ -306,34 +307,34 @@ function MessageInput({
         return prev + (needsNewline ? "\n\n" : "") + injectedText;
       });
       onClearInjectedText?.();
-      // Focus the textarea after inserting
-      setTimeout(() => textareaRef.current?.focus(), 0);
+      requestAnimationFrame(() => textareaRef.current?.focus());
     }
   }, [injectedText, onClearInjectedText]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (message.trim() && !disabled && !submitting && uploadsInProgress === 0) {
-      // Stop listening if we were recording
-      if (isListening) {
-        stopListening();
-      }
+    if (!message.trim() || disabled || submittingRef.current || uploadsInProgress > 0) {
+      return;
+    }
 
-      const messageToSend = message;
-      setSubmitting(true);
-      try {
-        await onSend(messageToSend);
-        // Only clear on success
-        setMessage("");
-        // Clear persisted draft on successful send
-        if (persistKey) {
-          localStorage.removeItem(PERSIST_KEY_PREFIX + persistKey);
-        }
-      } catch {
-        // Keep the message on error so user can retry
-      } finally {
-        setSubmitting(false);
+    if (isListening) {
+      stopListening();
+    }
+
+    const messageToSend = message;
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      await onSend(messageToSend);
+      setMessage((current) => (current === messageToSend ? "" : current));
+      if (persistKey && message === messageToSend) {
+        localStorage.removeItem(PERSIST_KEY_PREFIX + persistKey);
       }
+    } catch {
+      // Keep the message on error so user can retry
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   };
 
@@ -562,3 +563,4 @@ function MessageInput({
 }
 
 export default MessageInput;
+

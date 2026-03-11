@@ -549,6 +549,16 @@ func (cm *ConversationManager) ensureLoop(service llm.Service, modelID string) e
 				slog.Default().Error("Conversation loop stopped", "error", err)
 			}
 		}
+		cm.mu.Lock()
+		if cm.loop == loopInstance {
+			cm.loopCancel = nil
+			cm.loopCtx = nil
+			cm.loop = nil
+			cm.modelID = ""
+			cm.toolSet = nil
+		}
+		cm.mu.Unlock()
+		toolSet.Cleanup()
 	}()
 
 	return nil
